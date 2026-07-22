@@ -317,8 +317,15 @@ function normalizeRecipe(r) {
   };
 }
 
+function normalizeSmartQuotes(text) {
+  return text
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+}
+
 function parseRecipeFile(text) {
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const clean = normalizeSmartQuotes(text);
+  const lines = clean.split("\n").map(l => l.trim()).filter(Boolean);
   const parsed = [], errorLines = [];
   lines.forEach((line, idx) => {
     try { parsed.push(normalizeRecipe(JSON.parse(line))); }
@@ -768,7 +775,7 @@ function ImportModalHTML() {
   if (parsed.length || state.importErrors.length) {
     summary = '<div class="import-summary">' +
       '<div>' + parsed.length + ' recipe(s) read \u2014 ' + newCount + ' new, ' + updateCount + ' updating existing.</div>' +
-      (state.importErrors.length ? '<div style="color:var(--accent);margin-top:4px">' + icon("alert", 13) + ' Couldn\'t parse line(s) ' + state.importErrors.join(", ") + '</div>' : "") +
+      (state.importErrors.length ? '<div style="color:var(--accent);margin-top:4px">' + icon("alert", 13) + ' Couldn\'t parse line(s) ' + state.importErrors.join(", ") + ' \u2014 often caused by curly \u201Csmart quotes\u201D from your keyboard or notes app.</div>' : "") +
       (parsed.length ? '<ul>' + parsed.map(r => '<li>' + esc(r.title) + '</li>').join("") + '</ul>' : "") +
     '</div>';
   }
@@ -927,7 +934,7 @@ Actions.addFromPastedResponse = async function() {
   if (!text) { toast("Paste the AI's response first"); return; }
   const { parsed, errorLines } = parseRecipeFile(text);
   if (parsed.length === 0) {
-    state.modalError = "Couldn't read that as a recipe \u2014 make sure you pasted the AI's full response.";
+    state.modalError = "Couldn't read that as a recipe. Most often this is your keyboard's \u201Csmart quotes\u201D turning \" into curly quotes \u2014 check Settings \u2192 Keyboard \u2192 Smart Punctuation is off, then paste again. Otherwise make sure you pasted the AI's full response with nothing added or cut off.";
     renderModal();
     return;
   }

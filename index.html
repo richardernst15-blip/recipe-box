@@ -233,7 +233,7 @@ function icon(name, size, extra) {
 /* Helpers                                                                 */
 /* ====================================================================== */
 const todayStr = () => new Date().toISOString().slice(0, 10);
-
+const nowStamp = () => new Date().toISOString();
 function esc(s) {
   if (s == null) return "";
   return String(s)
@@ -544,9 +544,12 @@ function mergeByUpdatedAt(local, remote) {
   return Array.from(map.values());
 }
 let syncInFlight = false;
-async function runSync(deletedId) {
-  if (!state.sync.enabled || !state.sync.token || !state.sync.owner || !state.sync.repo) return;
-  if (syncInFlight) return;
+async function runSync(deletedId, manual) {
+  if (!state.sync.enabled || !state.sync.token || !state.sync.owner || !state.sync.repo) {
+    if (manual) toast("Set up sync first");
+    return;
+  }
+  if (syncInFlight) { if (manual) toast("Sync already in progress"); return; }
   syncInFlight = true;
   state.sync.status = "syncing";
   try {
@@ -560,7 +563,8 @@ async function runSync(deletedId) {
     await dbBulkPut(merged);
     state.recipes = merged;
     state.sync.status = "ok";
-    state.sync.lastSynced = new Date().toISOString();
+        state.sync.lastSynced = new Date().toISOString();
+    if (manual) toast("Synced");
   } catch (e) {
     state.sync.status = "error";
     toast("Sync failed \u2014 " + e.message);
@@ -725,7 +729,10 @@ function DetailViewHTML(r) {
     '<div class="wrap">' +
       '<div class="detail-top">' +
         '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Recipe box</button>' +
-        '<button class="btn btn-sm" onclick="Actions.openEdit(\'' + r.id + '\')">' + icon("pencil", 14) + ' Edit</button>' +
+        '<div class="edit-actions">' +
+          (state.sync.enabled ? '<button class="btn btn-sm" onclick="Actions.syncNow()">' + icon("sync", 14) + ' Reload</button>' : "") +
+          '<button class="btn btn-sm" onclick="Actions.openEdit(\'' + r.id + '\')">' + icon("pencil", 14) + ' Edit</button>' +
+        '</div>' +
       '</div>' +
       '<h1 class="detail-title font-display">' + esc(r.title) + '</h1>' +
       (r.description ? '<p class="detail-desc">' + esc(r.description) + '</p>' : "") +
@@ -1010,7 +1017,7 @@ Actions.saveSyncSettings = function() {
   state.modal = null;
   renderModal();
 };
-Actions.syncNow = function() { runSync(); };
+Actions.syncNow = function() { runSync(undefined, true); };
 Actions.setCookRating = function(n) { state.cookLogRating = n; renderModal(); };
 Actions.saveCookLog = async function() {
   const date = document.getElementById("cl-date").value || todayStr();
@@ -1018,7 +1025,7 @@ Actions.saveCookLog = async function() {
   const r = getActiveRecipe();
   if (!r) return;
   r.cookLog.push({ date, rating: state.cookLogRating, notes });
-  r.updatedAt = todayStr();
+  r.updatedAt = nowStamp();
   await persistUpsert(r);
   state.modal = null;
   toast("Cook logged");
@@ -1157,7 +1164,7 @@ Actions.saveRecipeForm = async function(isNew) {
   let id = d.id;
   if (!id) id = uniqueId(slugify(d.title) + "-" + Math.random().toString(36).slice(2, 4), existingIds);
   const tags = (d._tagsText || "").split(",").map(t => t.trim()).filter(Boolean);
-  const normalized = normalizeRecipe({ ...d, id, tags, updatedAt: todayStr() });
+    const normalized = normalizeRecipe({ ...d, id, tags, updatedAt: nowStamp() });
   const idx = state.recipes.findIndex(r => r.id === id);
   if (idx >= 0) state.recipes[idx] = normalized; else state.recipes.push(normalized);
   await persistUpsert(normalized);

@@ -514,12 +514,12 @@ function ghHeaders() {
   return { "Authorization": "Bearer " + state.sync.token, "Accept": "application/vnd.github+json" };
 }
 async function githubFetchRecipes() {
-  const res = await fetch(ghUrl(), { headers: ghHeaders() });
-  if (res.status === 404) return { recipes: [], sha: null };
+  const res = await fetch(ghUrl(), { headers: ghHeaders(), cache: "no-store" });
+  if (res.status === 404) return { recipes: [], sha: null, errorLines: [] };
   if (!res.ok) throw new Error("fetch " + res.status);
   const data = await res.json();
-  const { parsed } = parseRecipeFile(b64DecodeUtf8(data.content));
-  return { recipes: parsed, sha: data.sha };
+  const { parsed, errorLines } = parseRecipeFile(b64DecodeUtf8(data.content));
+  return { recipes: parsed, sha: data.sha, errorLines };
 }
 async function githubPushRecipes(recipes, sha) {
   const lines = recipes.map(r => JSON.stringify(r)).join("\n");
@@ -549,7 +549,10 @@ async function runSync(deletedId) {
   syncInFlight = true;
   state.sync.status = "syncing";
   try {
-    const remote = await githubFetchRecipes();
+        const remote = await githubFetchRecipes();
+    if (remote.errorLines && remote.errorLines.length) {
+      toast("Warning: " + remote.errorLines.length + " recipe(s) on GitHub couldn't be read and were skipped");
+    }
     let merged = mergeByUpdatedAt(state.recipes, remote.recipes);
     if (deletedId) merged = merged.filter(r => r.id !== deletedId);
     await githubPushRecipes(merged, remote.sha);
@@ -1129,9 +1132,9 @@ Actions.saveRecipeForm = async function(isNew) {
   syncDraftFromDOM();
   const d = state.editDraft;
   if (!d.title || !d.title.trim()) { toast("Give the recipe a title first"); return; }
-  const existingIds = state.recipes.map(r => r.id).filter(id => id !== d.id);
+    const existingIds = state.recipes.map(r => r.id).filter(id => id !== d.id);
   let id = d.id;
-  if (!id) id = uniqueId(slugify(d.title), existingIds);
+  if (!id) id = uniqueId(slugify(d.title) + "-" + Math.random().toString(36).slice(2, 4), existingIds);
   const tags = (d._tagsText || "").split(",").map(t => t.trim()).filter(Boolean);
   const normalized = normalizeRecipe({ ...d, id, tags, updatedAt: todayStr() });
   const idx = state.recipes.findIndex(r => r.id === id);

@@ -631,7 +631,7 @@ function LibraryViewHTML() {
       '<div class="toolbar" style="margin-top:18px">' +
         '<button class="btn btn-primary" onclick="Actions.openNew()">' + icon("plus", 16) + ' New recipe</button>' +
         '<button class="btn" onclick="Actions.openModal(\'urlToRecipe\')">' + icon("link", 16) + ' URL to Recipe</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'import\')">' + icon("upload", 16) + ' Import .recipe</button>' +
+        '<button class="btn" onclick="Actions.openModal(\'import\')">' + icon("upload", 16) + ' Import Recipe</button>' +
         '<button class="btn" onclick="Actions.exportAll()">' + icon("download", 16) + ' Export all</button>' +
         '<button class="btn" onclick="Actions.openModal(\'sync\')">' + icon("sync", 16) + ' Sync' + (state.sync.enabled ? (state.sync.status === "error" ? " \u26A0\uFE0F" : " \u2713") : "") + '</button>' +
       '</div>' +
@@ -878,10 +878,10 @@ function ImportModalHTML() {
   }
   return (
     '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
-      '<div class="modal-head"><h3 class="font-display">Import .recipe file</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
-      '<p class="helper-text">Choose a .recipe file \u2014 one JSON recipe per line. Recipes that share an id with one already in your box will be updated; everything else is added new.</p>' +
+      '<div class="modal-head"><h3 class="font-display">Import Recipe file</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
+      '<p class="helper-text">Choose a recipe file \u2014 one JSON recipe per line. Recipes that share an id with one already in your box will be updated; everything else is added new.</p>' +
       '<label class="dropzone">' + icon("upload", 22) + '<span>' + (state._importFileName ? esc(state._importFileName) : "Tap to choose a file") + '</span>' +
-        '<input type="file" accept=".recipe,.jsonl,.txt" style="display:none" onchange="Actions.handleImportFile(this)" /></label>' +
+        '<input type="file" accept=".jsonl,.txt" style="display:none" onchange="Actions.handleImportFile(this)" /></label>' +
       summary +
       '<button class="btn btn-primary btn-block" ' + (parsed.length === 0 ? "disabled" : "") + ' onclick="Actions.confirmImport()">Import ' + (parsed.length || "") + ' recipe' + (parsed.length === 1 ? "" : "s") + '</button>' +
     '</div></div>'
@@ -923,7 +923,7 @@ function SyncModalHTML() {
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
       '<div class="field"><label>GitHub username</label><input type="text" id="sync-owner" value="' + esc(s.owner) + '" placeholder="richard" /></div>' +
       '<div class="field"><label>Repo name</label><input type="text" id="sync-repo" value="' + esc(s.repo) + '" placeholder="recipe-box-data" /></div>' +
-      '<div class="field"><label>File path</label><input type="text" id="sync-path" value="' + esc(s.path) + '" placeholder="recipes.recipe" /></div>' +
+      '<div class="field"><label>File path</label><input type="text" id="sync-path" value="' + esc(s.path) + '" placeholder="recipes.txt" /></div>' +
       '<div class="field"><label>Personal access token</label><input type="text" id="sync-token" value="' + esc(s.token) + '" placeholder="github_pat_..." /></div>' +
       '<p class="helper-text">' + statusText + '</p>' +
       '<div class="edit-actions">' +
@@ -985,7 +985,7 @@ Actions.closeModal = function() { state.modal = null; renderModal(); };
 Actions.saveSyncSettings = function() {
   state.sync.owner = document.getElementById("sync-owner").value.trim();
   state.sync.repo = document.getElementById("sync-repo").value.trim();
-  state.sync.path = document.getElementById("sync-path").value.trim() || "recipes.recipe";
+  state.sync.path = document.getElementById("sync-path").value.trim() || "recipes.txt";
   state.sync.token = document.getElementById("sync-token").value.trim();
   state.sync.enabled = !!(state.sync.owner && state.sync.repo && state.sync.token);
   saveSyncConfig();

@@ -221,6 +221,8 @@ const ICONS = {
   link: '<path d="M9.5 14.5l5-5"/><path d="M12.5 5.5l1-1a3.5 3.5 0 0 1 5 5l-1 1"/><path d="M11.5 18.5l-1 1a3.5 3.5 0 0 1-5-5l1-1"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   sync: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+  cloudDown: '<path d="M7 18a4 4 0 0 1-1-7.87A5.5 5.5 0 0 1 16.5 8H17a4 4 0 0 1 1 7.87"/><path d="M12 12v7"/><polyline points="9 16 12 19 15 16"/>',
+  cloudUp: '<path d="M7 18a4 4 0 0 1-1-7.87A5.5 5.5 0 0 1 16.5 8H17a4 4 0 0 1 1 7.87"/><path d="M12 19v-7"/><polyline points="9 15 12 12 15 15"/>',
   star: '<polygon points="12 2 15 9 22 9 16.5 13.5 18.5 21 12 17 5.5 21 7.5 13.5 2 9 9 9"/>'
 };
 function icon(name, size, extra) {
@@ -480,15 +482,15 @@ function toast(msg) {
 /* Persistence actions                                                     */
 /* ====================================================================== */
 async function persistUpsert(recipe) {
-  try { await dbPut(recipe); runSync(); }
+  try { await dbPut(recipe); }
   catch (e) { toast("Couldn't save \u2014 " + e.message); }
 }
 async function persistBulk(recipes) {
-  try { await dbBulkPut(recipes); runSync(); }
+  try { await dbBulkPut(recipes); }
   catch (e) { toast("Couldn't save \u2014 " + e.message); }
 }
 async function persistDelete(id) {
-  try { await dbDelete(id); runSync(id); }
+  try { await dbDelete(id); }
   catch (e) { toast("Couldn't delete \u2014 " + e.message); }
 }
 const SYNC_KEY = "recipeBoxSyncConfig";
@@ -524,7 +526,7 @@ async function githubFetchRecipes() {
 }
 async function githubPushRecipes(recipes, sha) {
   const lines = recipes.map(r => JSON.stringify(r)).join("\n");
-  const body = { message: "Recipe Box sync", content: b64EncodeUtf8(lines) };
+  const body = { message: "Recipe Box save", content: b64EncodeUtf8(lines) };
   if (sha) body.sha = sha;
   const res = await fetch(ghUrl(), { method: "PUT", headers: { ...ghHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error("push " + res.status + " " + (e.message || "")); }
@@ -544,30 +546,51 @@ function mergeByUpdatedAt(local, remote) {
   return Array.from(map.values());
 }
 let syncInFlight = false;
-async function runSync(deletedId, manual) {
+function requireDataSettings() {
   if (!state.sync.enabled || !state.sync.token || !state.sync.owner || !state.sync.repo) {
-    if (manual) toast("Set up sync first");
-    return;
+    toast("Set up Data Settings first");
+    return false;
   }
-  if (syncInFlight) { if (manual) toast("Sync already in progress"); return; }
+  return true;
+}
+async function loadFromGitHub() {
+  if (!requireDataSettings()) return;
+  if (syncInFlight) { toast("Already in progress"); return; }
   syncInFlight = true;
-  state.sync.status = "syncing";
+  state.sync.status = "loading";
   try {
-        const remote = await githubFetchRecipes();
+    const remote = await githubFetchRecipes();
     if (remote.errorLines && remote.errorLines.length) {
       toast("Warning: " + remote.errorLines.length + " recipe(s) on GitHub couldn't be read and were skipped");
     }
-    let merged = mergeByUpdatedAt(state.recipes, remote.recipes);
-    if (deletedId) merged = merged.filter(r => r.id !== deletedId);
-    await githubPushRecipes(merged, remote.sha);
+    const merged = mergeByUpdatedAt(state.recipes, remote.recipes);
     await dbBulkPut(merged);
     state.recipes = merged;
     state.sync.status = "ok";
-        state.sync.lastSynced = new Date().toISOString();
-    if (manual) toast("Synced");
+    state.sync.lastSynced = new Date().toISOString();
+    toast("Loaded from GitHub");
   } catch (e) {
     state.sync.status = "error";
-    toast("Sync failed \u2014 " + e.message);
+    toast("Load failed \u2014 " + e.message);
+  } finally {
+    syncInFlight = false;
+    renderApp();
+  }
+}
+async function saveToGitHub() {
+  if (!requireDataSettings()) return;
+  if (syncInFlight) { toast("Already in progress"); return; }
+  syncInFlight = true;
+  state.sync.status = "saving";
+  try {
+    const remote = await githubFetchRecipes();
+    await githubPushRecipes(state.recipes, remote.sha);
+    state.sync.status = "ok";
+    state.sync.lastSynced = new Date().toISOString();
+    toast("Saved to GitHub");
+  } catch (e) {
+    state.sync.status = "error";
+    toast("Save failed \u2014 " + e.message);
   } finally {
     syncInFlight = false;
     renderApp();
@@ -641,7 +664,9 @@ function LibraryViewHTML() {
         '<button class="btn" onclick="Actions.openModal(\'urlToRecipe\')">' + icon("link", 16) + ' URL to Recipe</button>' +
         '<button class="btn" onclick="Actions.openModal(\'import\')">' + icon("upload", 16) + ' Import Recipe</button>' +
         '<button class="btn" onclick="Actions.exportAll()">' + icon("download", 16) + ' Export all</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'sync\')">' + icon("sync", 16) + ' Sync' + (state.sync.enabled ? (state.sync.status === "error" ? " \u26A0\uFE0F" : " \u2713") : "") + '</button>' +
+        '<button class="btn" onclick="Actions.loadNow()">' + icon("cloudDown", 16) + ' Load</button>' +
+        '<button class="btn" onclick="Actions.saveNow()">' + icon("cloudUp", 16) + ' Save</button>' +
+        '<button class="btn" onclick="Actions.openModal(\'dataSettings\')">' + icon("sync", 16) + ' Data Settings</button>' +
       '</div>' +
     '</div>'
   );
@@ -729,10 +754,7 @@ function DetailViewHTML(r) {
     '<div class="wrap">' +
       '<div class="detail-top">' +
         '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Recipe box</button>' +
-        '<div class="edit-actions">' +
-          (state.sync.enabled ? '<button class="btn btn-sm" onclick="Actions.syncNow()">' + icon("sync", 14) + ' Reload</button>' : "") +
-          '<button class="btn btn-sm" onclick="Actions.openEdit(\'' + r.id + '\')">' + icon("pencil", 14) + ' Edit</button>' +
-        '</div>' +
+        '<button class="btn btn-sm" onclick="Actions.openEdit(\'' + r.id + '\')">' + icon("pencil", 14) + ' Edit</button>' +
       '</div>' +
       '<h1 class="detail-title font-display">' + esc(r.title) + '</h1>' +
       (r.description ? '<p class="detail-desc">' + esc(r.description) + '</p>' : "") +
@@ -934,15 +956,14 @@ function UrlToRecipeModalHTML() {
     '</div></div>'
   );
 }
-function SyncModalHTML() {
+function DataSettingsModalHTML() {
   const s = state.sync;
-  const statusText = s.status === "syncing" ? "Syncing\u2026" :
-    s.status === "error" ? "Last sync failed" :
-    s.lastSynced ? "Last synced " + new Date(s.lastSynced).toLocaleString() : "Not synced yet";
+  const statusText = s.status === "error" ? "Last attempt failed" :
+    s.lastSynced ? "Last successful load/save " + new Date(s.lastSynced).toLocaleString() : "Never loaded or saved yet";
   return (
     '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
-      '<div class="modal-head"><h3 class="font-display">Sync via GitHub</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
-      '<p class="helper-text">Uses a private GitHub repo as the shared store. Create one, then a fine-grained personal access token scoped to just that repo with Contents: Read and write. Every device that has this set up stays in sync automatically.</p>' +
+      '<div class="modal-head"><h3 class="font-display">Data Settings</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
+      '<p class="helper-text">Points the app at a private GitHub repo used by the Load and Save buttons on the main menu. Create the repo, then a fine-grained personal access token scoped to just that repo with Contents: Read and write.</p>' +
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
       '<div class="field"><label>GitHub username</label><input type="text" id="sync-owner" value="' + esc(s.owner) + '" placeholder="richard" /></div>' +
       '<div class="field"><label>Repo name</label><input type="text" id="sync-repo" value="' + esc(s.repo) + '" placeholder="recipe-box-data" /></div>' +
@@ -950,8 +971,7 @@ function SyncModalHTML() {
       '<div class="field"><label>Personal access token</label><input type="text" id="sync-token" value="' + esc(s.token) + '" placeholder="github_pat_..." /></div>' +
       '<p class="helper-text">' + statusText + '</p>' +
       '<div class="edit-actions">' +
-        '<button class="btn" onclick="Actions.syncNow()">' + icon("sync", 14) + ' Sync now</button>' +
-        '<button class="btn btn-primary" onclick="Actions.saveSyncSettings()">Save</button>' +
+        '<button class="btn btn-primary" onclick="Actions.saveDataSettings()">Save settings</button>' +
       '</div>' +
     '</div></div>'
   );
@@ -962,7 +982,7 @@ function renderModal() {
   if (state.modal === "cookLog") root.innerHTML = CookLogModalHTML();
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
-  else if (state.modal === "sync") root.innerHTML = SyncModalHTML();
+  else if (state.modal === "dataSettings") root.innerHTML = DataSettingsModalHTML();
 }
 
 /* ====================================================================== */
@@ -1005,19 +1025,19 @@ Actions.openModal = function(name) {
   renderModal();
 };
 Actions.closeModal = function() { state.modal = null; renderModal(); };
-Actions.saveSyncSettings = function() {
+Actions.saveDataSettings = function() {
   state.sync.owner = document.getElementById("sync-owner").value.trim();
   state.sync.repo = document.getElementById("sync-repo").value.trim();
   state.sync.path = document.getElementById("sync-path").value.trim() || "recipes.txt";
   state.sync.token = document.getElementById("sync-token").value.trim();
   state.sync.enabled = !!(state.sync.owner && state.sync.repo && state.sync.token);
   saveSyncConfig();
-  if (state.sync.enabled) { toast("Sync settings saved"); runSync(); }
-  else toast("Sync settings saved (incomplete \u2014 sync stays off)");
+  toast(state.sync.enabled ? "Data settings saved" : "Data settings saved (incomplete \u2014 Load/Save won't work yet)");
   state.modal = null;
   renderModal();
 };
-Actions.syncNow = function() { runSync(undefined, true); };
+Actions.loadNow = function() { loadFromGitHub(); };
+Actions.saveNow = function() { saveToGitHub(); };
 Actions.setCookRating = function(n) { state.cookLogRating = n; renderModal(); };
 Actions.saveCookLog = async function() {
   const date = document.getElementById("cl-date").value || todayStr();
@@ -1196,9 +1216,8 @@ window.Actions = Actions;
     state.recipes = [];
     console.warn("Storage unavailable:", e.message);
   } finally {
-        state.loading = false;
+    state.loading = false;
     renderApp();
-    runSync();
   }
 })();
 </script>

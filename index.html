@@ -144,8 +144,9 @@ body{ padding-top:env(safe-area-inset-top); }
 .subhead-row .small-label{ font-size:13px; color:var(--ink-muted); }
 
 .ing-row{ background:var(--card-alt); border-radius:10px; padding:9px; margin-bottom:7px; }
-.ing-grid{ display:grid; grid-template-columns:2fr 1fr 0.8fr 1fr 0.8fr auto; gap:6px; margin-bottom:6px; }
-.ing-grid input{ padding:7px 8px; border-radius:6px; border:1px solid var(--border); font-size:13px; width:100%; }
+.ing-grid{ display:grid; grid-template-columns:1fr 0.9fr 1fr 0.9fr auto auto; gap:6px; margin-bottom:6px; align-items:center; }
+.ing-grid input, .ing-grid select{ padding:7px 8px; border-radius:6px; border:1px solid var(--border); font-size:13px; width:100%; background:#fff; }
+.ing-name-input{ width:100%; padding:8px 9px; border-radius:6px; border:1px solid var(--border); font-size:14.5px; font-weight:600; margin-bottom:6px; }
 .ing-notes-input{ width:100%; padding:7px 8px; border-radius:6px; border:1px solid var(--border); font-size:13px; }
 .icon-btn{ border:none; background:none; cursor:pointer; color:var(--ink-muted); padding:4px; display:flex; align-items:center; justify-content:center; }
 .icon-btn:hover{ color:var(--accent); }
@@ -742,15 +743,27 @@ function updateRecipeBody() {
 /* ====================================================================== */
 /* Render: Edit / New                                                      */
 /* ====================================================================== */
-function IngredientRowHTML(ing, idx) {
+const METRIC_UNITS = [["g","g"],["kg","kg"],["ml","mL"],["l","L"],["each","each"]];
+const CUSTOMARY_UNITS = [["cup","cup"],["tbsp","tbsp"],["tsp","tsp"],["oz","oz"],["lb","lb"],["each","each"]];
+function unitSelectHTML(id, current, options) {
+  const matched = options.some(o => o[0] === current);
+  const extra = (!matched && current) ? '<option value="' + esc(current) + '" selected>' + esc(current) + '</option>' : "";
+  const opts = options.map(o => '<option value="' + o[0] + '"' + (current === o[0] ? " selected" : "") + '>' + o[1] + '</option>').join("");
+  return '<select id="' + id + '">' + extra + opts + '</select>';
+}
+function IngredientRowHTML(ing, idx, total) {
   return (
     '<div class="ing-row">' +
+      '<input class="ing-name-input" id="ing-name-' + idx + '" placeholder="Ingredient name" value="' + esc(ing.name) + '" />' +
       '<div class="ing-grid">' +
-        '<input id="ing-name-' + idx + '" placeholder="Name" value="' + esc(ing.name) + '" />' +
         '<input id="ing-mval-' + idx + '" type="number" placeholder="metric #" value="' + esc(ing.metricValue) + '" />' +
-        '<input id="ing-munit-' + idx + '" placeholder="g/ml" value="' + esc(ing.metricUnit) + '" />' +
+        unitSelectHTML('ing-munit-' + idx, ing.metricUnit, METRIC_UNITS) +
         '<input id="ing-cval-' + idx + '" type="number" placeholder="cust #" value="' + esc(ing.customaryValue) + '" />' +
-        '<input id="ing-cunit-' + idx + '" placeholder="cup/oz" value="' + esc(ing.customaryUnit) + '" />' +
+        unitSelectHTML('ing-cunit-' + idx, ing.customaryUnit, CUSTOMARY_UNITS) +
+        '<div class="step-controls">' +
+          '<button class="icon-btn" ' + (idx === 0 ? "disabled" : "") + ' onclick="Actions.moveIngredient(' + idx + ',-1)">' + icon("chevronUp", 15) + '</button>' +
+          '<button class="icon-btn" ' + (idx === total - 1 ? "disabled" : "") + ' onclick="Actions.moveIngredient(' + idx + ',1)">' + icon("chevronDown", 15) + '</button>' +
+        '</div>' +
         '<button class="icon-btn" onclick="Actions.removeIngredient(' + idx + ')">' + icon("x", 16) + '</button>' +
       '</div>' +
       '<input class="ing-notes-input" id="ing-notes-' + idx + '" placeholder="notes (optional)" value="' + esc(ing.notes) + '" />' +
@@ -761,7 +774,7 @@ function StepRowHTML(s, idx, total) {
   return (
     '<div class="step-row">' +
       '<div class="step-idx font-mono">' + (idx + 1) + '</div>' +
-      '<textarea id="step-text-' + idx + '" rows="2">' + esc(s.text) + '</textarea>' +
+      '<textarea id="step-text-' + idx + '" rows="4">' + esc(s.text) + '</textarea>' +
       '<input class="timer-input" id="step-timer-' + idx + '" type="number" placeholder="min" value="' + esc(s.timerMinutes) + '" />' +
       '<div class="step-controls">' +
         '<button class="icon-btn" ' + (idx === 0 ? "disabled" : "") + ' onclick="Actions.moveStep(' + idx + ',-1)">' + icon("chevronUp", 15) + '</button>' +
@@ -774,7 +787,7 @@ function StepRowHTML(s, idx, total) {
 
 function EditViewHTML(isNew) {
   const d = state.editDraft;
-  const ingredientsHTML = d.ingredients.map((ing, idx) => IngredientRowHTML(ing, idx)).join("");
+    const ingredientsHTML = d.ingredients.map((ing, idx) => IngredientRowHTML(ing, idx, d.ingredients.length)).join("");
   const stepsHTML = d.steps.map((s, idx) => StepRowHTML(s, idx, d.steps.length)).join("");
   return (
     '<div class="wrap">' +
@@ -1108,6 +1121,14 @@ Actions.addIngredient = function() {
 Actions.removeIngredient = function(idx) {
   syncDraftFromDOM();
   state.editDraft.ingredients.splice(idx, 1);
+  renderApp();
+};
+Actions.moveIngredient = function(idx, dir) {
+  syncDraftFromDOM();
+  const ings = state.editDraft.ingredients;
+  const j = idx + dir;
+  if (j < 0 || j >= ings.length) return;
+  [ings[idx], ings[j]] = [ings[j], ings[idx]];
   renderApp();
 };
 Actions.addStep = function() {

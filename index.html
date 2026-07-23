@@ -219,6 +219,7 @@ const ICONS = {
   book: '<path d="M3 5.5c3-1.2 6-1.2 9 .5v13c-3-1.7-6-1.7-9-.5z"/><path d="M21 5.5c-3-1.2-6-1.2-9 .5v13c3-1.7 6-1.7 9-.5z"/>',
   link: '<path d="M9.5 14.5l5-5"/><path d="M12.5 5.5l1-1a3.5 3.5 0 0 1 5 5l-1 1"/><path d="M11.5 18.5l-1 1a3.5 3.5 0 0 1-5-5l1-1"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  sync: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   star: '<polygon points="12 2 15 9 22 9 16.5 13.5 18.5 21 12 17 5.5 21 7.5 13.5 2 9 9 9"/>'
 };
 function icon(name, size, extra) {
@@ -461,10 +462,10 @@ const state = {
   modal: null,
   cookLogRating: 5,
   importParsed: [], importErrors: [],
-  urlToRecipe: { url: "", prompt: "", generated: false },
-  modalError: ""
+    urlToRecipe: { url: "", prompt: "", generated: false },
+  modalError: "",
+  sync: { owner: "", repo: "", path: "recipes.recipe", token: "", enabled: false, status: "idle", lastSynced: null }
 };
-
 function getActiveRecipe() { return state.recipes.find(r => r.id === state.activeId) || null; }
 
 function toast(msg) {
@@ -478,17 +479,93 @@ function toast(msg) {
 /* Persistence actions                                                     */
 /* ====================================================================== */
 async function persistUpsert(recipe) {
-  try { await dbPut(recipe); }
+  try { await dbPut(recipe); runSync(); }
   catch (e) { toast("Couldn't save \u2014 " + e.message); }
 }
 async function persistBulk(recipes) {
-  try { await dbBulkPut(recipes); }
+  try { await dbBulkPut(recipes); runSync(); }
   catch (e) { toast("Couldn't save \u2014 " + e.message); }
 }
 async function persistDelete(id) {
-  try { await dbDelete(id); }
+  try { await dbDelete(id); runSync(id); }
   catch (e) { toast("Couldn't delete \u2014 " + e.message); }
 }
+const SYNC_KEY = "recipeBoxSyncConfig";
+function loadSyncConfig() {
+  try {
+    const raw = localStorage.getItem(SYNC_KEY);
+    if (raw) Object.assign(state.sync, JSON.parse(raw));
+  } catch (e) {}
+}
+function saveSyncConfig() {
+  try {
+    localStorage.setItem(SYNC_KEY, JSON.stringify({
+      owner: state.sync.owner, repo: state.sync.repo, path: state.sync.path,
+      token: state.sync.token, enabled: state.sync.enabled
+    }));
+  } catch (e) {}
+}
+function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
+function b64DecodeUtf8(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, "")))); }
+function ghUrl() {
+  return "https://api.github.com/repos/" + state.sync.owner + "/" + state.sync.repo + "/contents/" + state.sync.path;
+}
+function ghHeaders() {
+  return { "Authorization": "Bearer " + state.sync.token, "Accept": "application/vnd.github+json" };
+}
+async function githubFetchRecipes() {
+  const res = await fetch(ghUrl(), { headers: ghHeaders() });
+  if (res.status === 404) return { recipes: [], sha: null };
+  if (!res.ok) throw new Error("fetch " + res.status);
+  const data = await res.json();
+  const { parsed } = parseRecipeFile(b64DecodeUtf8(data.content));
+  return { recipes: parsed, sha: data.sha };
+}
+async function githubPushRecipes(recipes, sha) {
+  const lines = recipes.map(r => JSON.stringify(r)).join("\n");
+  const body = { message: "Recipe Box sync", content: b64EncodeUtf8(lines) };
+  if (sha) body.sha = sha;
+  const res = await fetch(ghUrl(), { method: "PUT", headers: { ...ghHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error("push " + res.status + " " + (e.message || "")); }
+  return res.json();
+}
+function mergeByUpdatedAt(local, remote) {
+  const map = new Map(local.map(r => [r.id, r]));
+  remote.forEach(r => {
+    const existing = map.get(r.id);
+    if (!existing) { map.set(r.id, r); return; }
+    const winner = (r.updatedAt || "") > (existing.updatedAt || "") ? r : existing;
+    const logKey = (c) => c.date + "|" + c.rating + "|" + (c.notes || "");
+    const seen = new Set(), mergedLog = [];
+    [...existing.cookLog, ...r.cookLog].forEach(c => { const k = logKey(c); if (!seen.has(k)) { seen.add(k); mergedLog.push(c); } });
+    map.set(r.id, { ...winner, cookLog: mergedLog });
+  });
+  return Array.from(map.values());
+}
+let syncInFlight = false;
+async function runSync(deletedId) {
+  if (!state.sync.enabled || !state.sync.token || !state.sync.owner || !state.sync.repo) return;
+  if (syncInFlight) return;
+  syncInFlight = true;
+  state.sync.status = "syncing";
+  try {
+    const remote = await githubFetchRecipes();
+    let merged = mergeByUpdatedAt(state.recipes, remote.recipes);
+    if (deletedId) merged = merged.filter(r => r.id !== deletedId);
+    await githubPushRecipes(merged, remote.sha);
+    await dbBulkPut(merged);
+    state.recipes = merged;
+    state.sync.status = "ok";
+    state.sync.lastSynced = new Date().toISOString();
+  } catch (e) {
+    state.sync.status = "error";
+    toast("Sync failed \u2014 " + e.message);
+  } finally {
+    syncInFlight = false;
+    renderApp();
+  }
+}
+
 
 /* ====================================================================== */
 /* Render: Library                                                         */
@@ -556,6 +633,7 @@ function LibraryViewHTML() {
         '<button class="btn" onclick="Actions.openModal(\'urlToRecipe\')">' + icon("link", 16) + ' URL to Recipe</button>' +
         '<button class="btn" onclick="Actions.openModal(\'import\')">' + icon("upload", 16) + ' Import .recipe</button>' +
         '<button class="btn" onclick="Actions.exportAll()">' + icon("download", 16) + ' Export all</button>' +
+        '<button class="btn" onclick="Actions.openModal(\'sync\')">' + icon("sync", 16) + ' Sync' + (state.sync.enabled ? (state.sync.status === "error" ? " \u26A0\uFE0F" : " \u2713") : "") + '</button>' +
       '</div>' +
     '</div>'
   );
@@ -833,13 +911,35 @@ function UrlToRecipeModalHTML() {
     '</div></div>'
   );
 }
-
+function SyncModalHTML() {
+  const s = state.sync;
+  const statusText = s.status === "syncing" ? "Syncing\u2026" :
+    s.status === "error" ? "Last sync failed" :
+    s.lastSynced ? "Last synced " + new Date(s.lastSynced).toLocaleString() : "Not synced yet";
+  return (
+    '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
+      '<div class="modal-head"><h3 class="font-display">Sync via GitHub</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
+      '<p class="helper-text">Uses a private GitHub repo as the shared store. Create one, then a fine-grained personal access token scoped to just that repo with Contents: Read and write. Every device that has this set up stays in sync automatically.</p>' +
+      (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
+      '<div class="field"><label>GitHub username</label><input type="text" id="sync-owner" value="' + esc(s.owner) + '" placeholder="richard" /></div>' +
+      '<div class="field"><label>Repo name</label><input type="text" id="sync-repo" value="' + esc(s.repo) + '" placeholder="recipe-box-data" /></div>' +
+      '<div class="field"><label>File path</label><input type="text" id="sync-path" value="' + esc(s.path) + '" placeholder="recipes.recipe" /></div>' +
+      '<div class="field"><label>Personal access token</label><input type="text" id="sync-token" value="' + esc(s.token) + '" placeholder="github_pat_..." /></div>' +
+      '<p class="helper-text">' + statusText + '</p>' +
+      '<div class="edit-actions">' +
+        '<button class="btn" onclick="Actions.syncNow()">' + icon("sync", 14) + ' Sync now</button>' +
+        '<button class="btn btn-primary" onclick="Actions.saveSyncSettings()">Save</button>' +
+      '</div>' +
+    '</div></div>'
+  );
+}
 function renderModal() {
   const root = document.getElementById("modal-root");
   if (!state.modal) { root.innerHTML = ""; return; }
   if (state.modal === "cookLog") root.innerHTML = CookLogModalHTML();
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
+  else if (state.modal === "sync") root.innerHTML = SyncModalHTML();
 }
 
 /* ====================================================================== */
@@ -882,7 +982,19 @@ Actions.openModal = function(name) {
   renderModal();
 };
 Actions.closeModal = function() { state.modal = null; renderModal(); };
-
+Actions.saveSyncSettings = function() {
+  state.sync.owner = document.getElementById("sync-owner").value.trim();
+  state.sync.repo = document.getElementById("sync-repo").value.trim();
+  state.sync.path = document.getElementById("sync-path").value.trim() || "recipes.recipe";
+  state.sync.token = document.getElementById("sync-token").value.trim();
+  state.sync.enabled = !!(state.sync.owner && state.sync.repo && state.sync.token);
+  saveSyncConfig();
+  if (state.sync.enabled) { toast("Sync settings saved"); runSync(); }
+  else toast("Sync settings saved (incomplete \u2014 sync stays off)");
+  state.modal = null;
+  renderModal();
+};
+Actions.syncNow = function() { runSync(); };
 Actions.setCookRating = function(n) { state.cookLogRating = n; renderModal(); };
 Actions.saveCookLog = async function() {
   const date = document.getElementById("cl-date").value || todayStr();
@@ -1046,14 +1158,16 @@ window.Actions = Actions;
 /* Init                                                                    */
 /* ====================================================================== */
 (async function init() {
+  loadSyncConfig();
   try {
     state.recipes = await dbGetAll();
   } catch (e) {
     state.recipes = [];
     console.warn("Storage unavailable:", e.message);
   } finally {
-    state.loading = false;
+        state.loading = false;
     renderApp();
+    runSync();
   }
 })();
 </script>

@@ -465,7 +465,7 @@ const state = {
   importParsed: [], importErrors: [],
     urlToRecipe: { url: "", prompt: "", generated: false },
   modalError: "",
-  sync: { owner: "", repo: "", path: "recipes.recipe", token: "", enabled: false, status: "idle", lastSynced: null }
+  sync: { owner: "", repo: "", path: "recipes.txt", token: "", enabled: false, status: "idle", lastSynced: null }
 };
 function getActiveRecipe() { return state.recipes.find(r => r.id === state.activeId) || null; }
 

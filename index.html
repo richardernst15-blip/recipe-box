@@ -42,7 +42,7 @@ body{ padding-top:env(safe-area-inset-top); }
 .search-wrap .icon{ position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-muted); pointer-events:none; }
 
 /* chips */
-.chips{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+.chips{ display:flex; flex-wrap:wrap; align-content:flex-start; gap:8px; margin-bottom:16px; max-height:104px; overflow-y:auto; padding-right:2px; }
 .chip{ font-size:12.5px; padding:6px 13px; border-radius:999px; border:1px solid var(--border); background:#fff; color:var(--ink-muted); cursor:pointer; }
 .chip.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
 
@@ -467,7 +467,7 @@ const state = {
   importParsed: [], importErrors: [],
     urlToRecipe: { url: "", prompt: "", generated: false },
   modalError: "",
-  sync: { owner: "", repo: "", path: "recipes.txt", token: "", enabled: false, status: "idle", lastSynced: null }
+  sync: { path: "recipes.txt", status: "idle", lastSynced: null }
 };
 function getActiveRecipe() { return state.recipes.find(r => r.id === state.activeId) || null; }
 
@@ -502,34 +502,24 @@ function loadSyncConfig() {
 }
 function saveSyncConfig() {
   try {
-    localStorage.setItem(SYNC_KEY, JSON.stringify({
-      owner: state.sync.owner, repo: state.sync.repo, path: state.sync.path,
-      token: state.sync.token, enabled: state.sync.enabled
-    }));
+    localStorage.setItem(SYNC_KEY, JSON.stringify({ path: state.sync.path }));
   } catch (e) {}
 }
-function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
-function b64DecodeUtf8(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, "")))); }
-function ghUrl() {
-  return "https://api.github.com/repos/" + state.sync.owner + "/" + state.sync.repo + "/contents/" + state.sync.path;
+function workerUrl() {
+  return "/recipes/" + encodeURIComponent(state.sync.path);
 }
-function ghHeaders() {
-  return { "Authorization": "Bearer " + state.sync.token, "Accept": "application/vnd.github+json" };
-}
-async function githubFetchRecipes() {
-  const res = await fetch(ghUrl(), { headers: ghHeaders(), cache: "no-store" });
-  if (res.status === 404) return { recipes: [], sha: null, errorLines: [] };
+async function workerFetchRecipes() {
+  const res = await fetch(workerUrl(), { cache: "no-store" });
+  if (res.status === 404) return { recipes: [], errorLines: [] };
   if (!res.ok) throw new Error("fetch " + res.status);
-  const data = await res.json();
-  const { parsed, errorLines } = parseRecipeFile(b64DecodeUtf8(data.content));
-  return { recipes: parsed, sha: data.sha, errorLines };
+  const text = await res.text();
+  const { parsed, errorLines } = parseRecipeFile(text);
+  return { recipes: parsed, errorLines };
 }
-async function githubPushRecipes(recipes, sha) {
+async function workerPushRecipes(recipes) {
   const lines = recipes.map(r => JSON.stringify(r)).join("\n");
-  const body = { message: "Recipe Box save", content: b64EncodeUtf8(lines) };
-  if (sha) body.sha = sha;
-  const res = await fetch(ghUrl(), { method: "PUT", headers: { ...ghHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error("push " + res.status + " " + (e.message || "")); }
+  const res = await fetch(workerUrl(), { method: "PUT", headers: { "Content-Type": "text/plain" }, body: lines });
+  if (!res.ok) throw new Error("push " + res.status);
   return res.json();
 }
 function mergeByUpdatedAt(local, remote) {
@@ -546,29 +536,21 @@ function mergeByUpdatedAt(local, remote) {
   return Array.from(map.values());
 }
 let syncInFlight = false;
-function requireDataSettings() {
-  if (!state.sync.enabled || !state.sync.token || !state.sync.owner || !state.sync.repo) {
-    toast("Set up Data Settings first");
-    return false;
-  }
-  return true;
-}
-async function loadFromGitHub() {
-  if (!requireDataSettings()) return;
+async function loadFromWorker() {
   if (syncInFlight) { toast("Already in progress"); return; }
   syncInFlight = true;
   state.sync.status = "loading";
   try {
-    const remote = await githubFetchRecipes();
+    const remote = await workerFetchRecipes();
     if (remote.errorLines && remote.errorLines.length) {
-      toast("Warning: " + remote.errorLines.length + " recipe(s) on GitHub couldn't be read and were skipped");
+      toast("Warning: " + remote.errorLines.length + " recipe(s) couldn't be read and were skipped");
     }
     const merged = mergeByUpdatedAt(state.recipes, remote.recipes);
     await dbBulkPut(merged);
     state.recipes = merged;
     state.sync.status = "ok";
     state.sync.lastSynced = new Date().toISOString();
-    toast("Loaded from GitHub");
+    toast("Loaded");
   } catch (e) {
     state.sync.status = "error";
     toast("Load failed \u2014 " + e.message);
@@ -577,17 +559,15 @@ async function loadFromGitHub() {
     renderApp();
   }
 }
-async function saveToGitHub() {
-  if (!requireDataSettings()) return;
+async function saveToWorker() {
   if (syncInFlight) { toast("Already in progress"); return; }
   syncInFlight = true;
   state.sync.status = "saving";
   try {
-    const remote = await githubFetchRecipes();
-    await githubPushRecipes(state.recipes, remote.sha);
+    await workerPushRecipes(state.recipes);
     state.sync.status = "ok";
     state.sync.lastSynced = new Date().toISOString();
-    toast("Saved to GitHub");
+    toast("Saved");
   } catch (e) {
     state.sync.status = "error";
     toast("Save failed \u2014 " + e.message);
@@ -614,10 +594,16 @@ function RecipeCardHTML(r) {
   );
 }
 
-function allTags() {
+function tagSort(a, b) {
+  const aUpper = /^[A-Z]/.test(a), bUpper = /^[A-Z]/.test(b);
+  if (aUpper !== bUpper) return aUpper ? -1 : 1;
+  return a.localeCompare(b);
+}
+function visibleTags() {
+  const relevant = state.recipes.filter(r => state.activeTags.every(t => r.tags.includes(t)));
   const s = new Set();
-  state.recipes.forEach(r => r.tags.forEach(t => s.add(t)));
-  return Array.from(s).sort();
+  relevant.forEach(r => r.tags.forEach(t => s.add(t)));
+  return Array.from(s).sort(tagSort);
 }
 
 function filteredRecipes() {
@@ -630,8 +616,12 @@ function filteredRecipes() {
   });
 }
 
+function hasActiveFilter() {
+  return !!(state.search.trim() || state.activeTags.length);
+}
+
 function ResultsSectionHTML() {
-  const tags = allTags();
+  const tags = visibleTags();
   const chips = tags.map(t =>
     '<span class="chip ' + (state.activeTags.includes(t) ? "active" : "") + '" onclick="Actions.toggleTag(\'' + esc(t).replace(/'/g,"\\'") + '\')">' + esc(t) + '</span>'
   ).join("");
@@ -639,9 +629,8 @@ function ResultsSectionHTML() {
   let body;
   if (results.length === 0) {
     body = state.recipes.length === 0
-      ? '<div class="empty-state"><p class="title font-display">Your recipe box is empty</p><p class="sub">Import a Recipe file, use URL to Recipe, or add your first recipe.</p>' +
+      ? '<div class="empty-state"><p class="title font-display">Your recipe box is empty</p><p class="sub">Add your first recipe, or import one from the Actions menu.</p>' +
         '<div class="empty-actions"><button class="btn btn-primary" onclick="Actions.openNew()">Add a recipe</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'urlToRecipe\')">URL to Recipe</button>' +
         '<button class="btn" onclick="Actions.openModal(\'import\')">Import a file</button></div></div>'
       : '<div class="empty-state"><p class="title font-display">Nothing matches</p><p class="sub">Try a different search or clear your tag filters.</p></div>';
   } else {
@@ -655,19 +644,12 @@ function LibraryViewHTML() {
     '<div class="wrap">' +
       '<div class="header"><span class="icon-wrap">' + icon("book", 30) + '</span>' +
         '<div><h1 class="font-display">The Recipe Box</h1>' +
-        '<p>' + state.recipes.length + ' recipe' + (state.recipes.length === 1 ? "" : "s") + ' on the shelf</p></div></div>' +
+        '<p>' + state.recipes.length + ' recipe' + (state.recipes.length === 1 ? "" : "s") + ' on the shelf</p></div>' +
+        '<button class="btn" style="margin-left:auto" onclick="Actions.openModal(\'actions\')">Actions</button>' +
+      '</div>' +
       '<div class="search-wrap"><span class="icon">' + icon("search", 18) + '</span>' +
         '<input id="search-input" type="text" placeholder="Search recipes, ingredients, tags..." value="' + esc(state.search) + '" oninput="Actions.onSearchInput(this.value)" /></div>' +
       '<div id="results-section">' + ResultsSectionHTML() + '</div>' +
-      '<div class="toolbar" style="margin-top:18px">' +
-        '<button class="btn btn-primary" onclick="Actions.openNew()">' + icon("plus", 16) + ' New recipe</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'urlToRecipe\')">' + icon("link", 16) + ' URL to Recipe</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'import\')">' + icon("upload", 16) + ' Import Recipe</button>' +
-        '<button class="btn" onclick="Actions.exportAll()">' + icon("download", 16) + ' Export all</button>' +
-        '<button class="btn" onclick="Actions.loadNow()">' + icon("cloudDown", 16) + ' Load</button>' +
-        '<button class="btn" onclick="Actions.saveNow()">' + icon("cloudUp", 16) + ' Save</button>' +
-        '<button class="btn" onclick="Actions.openModal(\'dataSettings\')">' + icon("sync", 16) + ' Data Settings</button>' +
-      '</div>' +
     '</div>'
   );
 }
@@ -823,7 +805,7 @@ function EditViewHTML(isNew) {
       '<div class="detail-top">' +
         '<button class="back-link" onclick="Actions.cancelEdit()">' + icon("chevronLeft", 18) + ' Cancel</button>' +
         '<div class="edit-actions">' +
-          (isNew ? "" : '<button class="btn btn-ghost btn-sm" onclick="Actions.deleteRecipe(\'' + d.id + '\')">' + icon("trash", 14) + ' Delete</button>') +
+          (isNew ? '<button class="btn btn-sm" onclick="Actions.openModal(\'urlToRecipe\')">' + icon("link", 14) + ' URL to Recipe</button>' : '<button class="btn btn-ghost btn-sm" onclick="Actions.deleteRecipe(\'' + d.id + '\')">' + icon("trash", 14) + ' Delete</button>') +
           '<button class="btn btn-primary btn-sm" onclick="Actions.saveRecipeForm(' + isNew + ')">' + icon("check", 14) + ' Save recipe</button>' +
         '</div>' +
       '</div>' +
@@ -924,9 +906,13 @@ function ImportModalHTML() {
   return (
     '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
       '<div class="modal-head"><h3 class="font-display">Import Recipe file</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
-      '<p class="helper-text">Choose a recipe file \u2014 one JSON recipe per line. Recipes that share an id with one already in your box will be updated; everything else is added new.</p>' +
-      '<label class="dropzone">' + icon("upload", 22) + '<span>' + (state._importFileName ? esc(state._importFileName) : "Tap to choose a file") + '</span>' +
-        '<input type="file" accept=".jsonl,.txt" style="display:none" onchange="Actions.handleImportFile(this)" /></label>' +
+      '<p class="helper-text">Paste from your clipboard, or choose a recipe file \u2014 one JSON recipe per line. Recipes that share an id with one already in your box will be updated; everything else is added new.</p>' +
+      '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">' +
+        '<button class="btn" style="flex:1; min-width:140px" onclick="Actions.pasteImportFile()">' + icon("copy", 16) + ' Paste Recipe file</button>' +
+        '<label class="btn" style="flex:1; min-width:140px; text-align:center; cursor:pointer;">' + icon("upload", 16) + ' Tap to choose a file' +
+          '<input type="file" accept=".jsonl,.txt" style="display:none" onchange="Actions.handleImportFile(this)" /></label>' +
+      '</div>' +
+      (state._importFileName ? '<p class="helper-text">Source: ' + esc(state._importFileName) + '</p>' : "") +
       summary +
       '<button class="btn btn-primary btn-block" ' + (parsed.length === 0 ? "disabled" : "") + ' onclick="Actions.confirmImport()">Import ' + (parsed.length || "") + ' recipe' + (parsed.length === 1 ? "" : "s") + '</button>' +
     '</div></div>'
@@ -956,22 +942,47 @@ function UrlToRecipeModalHTML() {
     '</div></div>'
   );
 }
+function baseNameFromPath(path) { return (path || "").replace(/\.txt$/i, ""); }
+function randomFileName() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let s = "";
+  for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return "recipes-" + s;
+}
 function DataSettingsModalHTML() {
   const s = state.sync;
   const statusText = s.status === "error" ? "Last attempt failed" :
     s.lastSynced ? "Last successful load/save " + new Date(s.lastSynced).toLocaleString() : "Never loaded or saved yet";
   return (
     '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
-      '<div class="modal-head"><h3 class="font-display">Data Settings</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
-      '<p class="helper-text">Points the app at a private GitHub repo used by the Load and Save buttons on the main menu. Create the repo, then a fine-grained personal access token scoped to just that repo with Contents: Read and write.</p>' +
+      '<div class="modal-head"><h3 class="font-display">File Settings</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
+      '<p class="helper-text">Each recipe file name is its own private space on the server. Sharing your file name with someone lets them see and edit only that file \u2014 keep it unguessable if that matters to you.</p>' +
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
-      '<div class="field"><label>GitHub username</label><input type="text" id="sync-owner" value="' + esc(s.owner) + '" placeholder="richard" /></div>' +
-      '<div class="field"><label>Repo name</label><input type="text" id="sync-repo" value="' + esc(s.repo) + '" placeholder="recipe-box-data" /></div>' +
-      '<div class="field"><label>File path</label><input type="text" id="sync-path" value="' + esc(s.path) + '" placeholder="recipes.txt" /></div>' +
-      '<div class="field"><label>Personal access token</label><input type="text" id="sync-token" value="' + esc(s.token) + '" placeholder="github_pat_..." /></div>' +
+      '<div class="field"><label>Recipes File Save Name</label>' +
+        '<div style="display:flex; align-items:center; gap:8px;">' +
+          '<input type="text" id="sync-path" value="' + esc(baseNameFromPath(s.path)) + '" placeholder="richards-recipes" style="flex:1" />' +
+          '<span class="font-mono" style="color:var(--ink-muted)">.txt</span>' +
+        '</div>' +
+        '<button type="button" class="btn btn-sm" style="margin-top:8px" onclick="Actions.generateFileName()">' + icon("sync", 14) + ' Generate random name</button>' +
+      '</div>' +
       '<p class="helper-text">' + statusText + '</p>' +
       '<div class="edit-actions">' +
         '<button class="btn btn-primary" onclick="Actions.saveDataSettings()">Save settings</button>' +
+      '</div>' +
+    '</div></div>'
+  );
+}
+function ActionsModalHTML() {
+  return (
+    '<div class="modal-overlay" onclick="if(event.target===this)Actions.closeModal()"><div class="modal-box">' +
+      '<div class="modal-head"><h3 class="font-display">Actions</h3><button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
+      '<div style="display:flex; flex-direction:column; gap:8px;">' +
+        '<button class="btn btn-primary btn-block" onclick="Actions.closeModal(); Actions.openNew();">' + icon("plus", 16) + ' New recipe</button>' +
+        '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\'import\');">' + icon("upload", 16) + ' Import Recipe</button>' +
+        '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.exportAll();">' + icon("download", 16) + ' Export ' + (hasActiveFilter() ? "Selected" : "All") + '</button>' +
+        '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.loadNow();">' + icon("cloudDown", 16) + ' Load</button>' +
+        '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.saveNow();">' + icon("cloudUp", 16) + ' Save</button>' +
+        '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\'dataSettings\');">' + icon("sync", 16) + ' File Settings</button>' +
       '</div>' +
     '</div></div>'
   );
@@ -983,6 +994,7 @@ function renderModal() {
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
   else if (state.modal === "dataSettings") root.innerHTML = DataSettingsModalHTML();
+  else if (state.modal === "actions") root.innerHTML = ActionsModalHTML();
 }
 
 /* ====================================================================== */
@@ -1026,18 +1038,19 @@ Actions.openModal = function(name) {
 };
 Actions.closeModal = function() { state.modal = null; renderModal(); };
 Actions.saveDataSettings = function() {
-  state.sync.owner = document.getElementById("sync-owner").value.trim();
-  state.sync.repo = document.getElementById("sync-repo").value.trim();
-  state.sync.path = document.getElementById("sync-path").value.trim() || "recipes.txt";
-  state.sync.token = document.getElementById("sync-token").value.trim();
-  state.sync.enabled = !!(state.sync.owner && state.sync.repo && state.sync.token);
+  let base = document.getElementById("sync-path").value.trim().replace(/\.txt$/i, "");
+  if (!base) base = "recipes";
+  state.sync.path = base + ".txt";
   saveSyncConfig();
-  toast(state.sync.enabled ? "Data settings saved" : "Data settings saved (incomplete \u2014 Load/Save won't work yet)");
+  toast("File settings saved");
   state.modal = null;
   renderModal();
 };
-Actions.loadNow = function() { loadFromGitHub(); };
-Actions.saveNow = function() { saveToGitHub(); };
+Actions.generateFileName = function() {
+  document.getElementById("sync-path").value = randomFileName();
+};
+Actions.loadNow = function() { loadFromWorker(); };
+Actions.saveNow = function() { saveToWorker(); };
 Actions.setCookRating = function(n) { state.cookLogRating = n; renderModal(); };
 Actions.saveCookLog = async function() {
   const date = document.getElementById("cl-date").value || todayStr();
@@ -1065,6 +1078,19 @@ Actions.handleImportFile = function(input) {
   };
   reader.readAsText(file);
 };
+Actions.pasteImportFile = async function() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text || !text.trim()) { toast("Clipboard is empty"); return; }
+    const { parsed, errorLines } = parseRecipeFile(text);
+    state.importParsed = parsed;
+    state.importErrors = errorLines;
+    state._importFileName = "Pasted from clipboard";
+    renderModal();
+  } catch (e) {
+    toast("Couldn't read clipboard \u2014 try \u201CTap to choose a file\u201D instead");
+  }
+};
 Actions.confirmImport = async function() {
   const { merged, added, updated } = mergeRecipes(state.recipes, state.importParsed);
   await persistBulk(state.importParsed);
@@ -1076,11 +1102,14 @@ Actions.confirmImport = async function() {
 };
 
 Actions.exportAll = function() {
-  const lines = state.recipes.map(r => JSON.stringify(r));
+  const filtered = hasActiveFilter();
+  const toExport = filtered ? filteredRecipes() : state.recipes;
+  if (toExport.length === 0) { toast("Nothing to export"); return; }
+  const lines = toExport.map(r => JSON.stringify(r));
   const blob = new Blob([lines.join("\n")], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "recipe-box-export-" + todayStr() + ".txt";
+  a.href = url; a.download = (filtered ? "recipe-box-selected-" : "recipe-box-export-") + todayStr() + ".txt";
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };

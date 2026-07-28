@@ -281,9 +281,17 @@ body{ padding-top:env(safe-area-inset-top); }
 .add-friend-row input{ flex:1; min-width:0; padding:10px 11px; border-radius:9px; border:1px solid var(--border); font-size:15px; background:#fff; }
 
 /* modal */
-.modal-overlay{ position:fixed; inset:0; background:rgba(34,31,28,.5); display:flex; align-items:flex-end; justify-content:center; z-index:80; }
+/* inset:0 pins all four edges to the same box, so the grey is exactly the
+   viewport and cannot come up short. Do not swap this for top + a height in
+   vh or dvh: the top would anchor to one viewport and the height measure a
+   different one, and the difference shows as a bar along the bottom. The
+   page beneath is held still by the scroll lock, which is what keeps a
+   toolbar from sliding in and moving the overlay in the first place. */
+.modal-overlay{ position:fixed; inset:0; background:rgba(34,31,28,.5); display:flex;
+  align-items:flex-end; justify-content:center; z-index:80; overscroll-behavior:contain; }
 @media (min-width:640px){ .modal-overlay{ align-items:center; padding:20px; } }
-.modal-box{ background:#fff; width:100%; max-width:560px; max-height:92vh; overflow-y:auto; border-radius:16px 16px 0 0; padding:22px; }
+.modal-box{ background:#fff; width:100%; max-width:560px; max-height:92vh; max-height:92dvh; overflow-y:auto;
+  overscroll-behavior:contain; border-radius:16px 16px 0 0; padding:22px; }
 @media (min-width:640px){ .modal-box{ border-radius:16px; } }
 .modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
 .modal-head h3{ margin:0; font-size:19px; }
@@ -315,7 +323,7 @@ body{ padding-top:env(safe-area-inset-top); }
 .fcount.zero { visibility:hidden; }
 .search-filter.on .fcount { background:#fff; color:var(--accent); }
 .chip-clear { border-style:dashed; }
-.filter-body { max-height:60vh; overflow-y:auto; margin:4px 0 12px; }
+.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain; margin:4px 0 12px; }
 .fcat { border-bottom:1px solid rgba(0,0,0,.08); }
 .fcat > summary { cursor:pointer; padding:11px 2px; font-weight:600; list-style:none; display:flex;
   align-items:center; line-height:19px; }
@@ -1835,8 +1843,37 @@ function ActionsModalHTML() {
     '</div>');
 }
 
+/* While a modal is up the page beneath is pinned where it stands. Left live,
+   it re-flows every time a filter changes, the document gets shorter, and the
+   browser answers by sliding its toolbar back in - which drags the fixed
+   overlay with it. Freezing the page ends the whole argument. */
+function setScrollLock(want) {
+  const b = document.body;
+  const held = b.getAttribute("data-scroll-lock");
+  if (want) {
+    if (held !== null) return;
+    const y = window.scrollY || window.pageYOffset || 0;
+    b.setAttribute("data-scroll-lock", String(y));
+    b.style.position = "fixed";
+    b.style.top = (-y) + "px";
+    b.style.left = "0";
+    b.style.right = "0";
+    b.style.width = "100%";
+  } else {
+    if (held === null) return;
+    b.removeAttribute("data-scroll-lock");
+    b.style.position = "";
+    b.style.top = "";
+    b.style.left = "";
+    b.style.right = "";
+    b.style.width = "";
+    window.scrollTo(0, Number(held) || 0);
+  }
+}
+
 function renderModal() {
   const root = document.getElementById("modal-root");
+  setScrollLock(!!state.modal);
   if (!state.modal) { root.innerHTML = ""; return; }
   if (state.modal === "logCook") root.innerHTML = LogCookModalHTML();
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
@@ -2055,10 +2092,11 @@ Actions.toggleFilterAt = function(i) {
   const t = (state._filterList || [])[i];
   if (!t) return;
   toggleActiveTag(t);
-  /* No rebuild, so nothing to scroll back to - the menu never left. */
+  /* No rebuild, so nothing to scroll back to - the menu never left. The
+     library underneath is left alone until the modal closes; redrawing it
+     now only changes the height of a page nobody can see. */
   updateFilterBoxes();
   updateFilterCounts();
-  updateLibraryChrome();
 };
 Actions.toggleTagAt = function(i) {
   const t = (state._tagList || [])[i];
@@ -2119,7 +2157,7 @@ Actions.openModal = function(name) {
   if (name === "urlToRecipe") state.urlToRecipe = { mode: state._nextImportMode || "url", url: "", prompt: "", generated: false };
   renderModal();
 };
-Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); };
+Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); updateLibraryChrome(); };
 
 /* --- cook log --- */
 Actions.setLogRating = function(n) { state.logRating = n; renderModal(); };

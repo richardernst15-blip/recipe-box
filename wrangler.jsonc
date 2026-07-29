@@ -1,28 +1,22 @@
 {
-  // Must match the existing Worker's name, or Cloudflare will create a
-  // second one and your workers.dev URL will change.
   "name": "recipe-box",
   "main": "worker.js",
-
-  // Pins runtime behaviour. Safe to bump; leaving it alone is also fine.
   "compatibility_date": "2026-07-29",
 
   // The D1 binding the Worker reads as env.DB.
-  // Fill in both fields from: npx wrangler d1 list
-  // (or Cloudflare dashboard -> Storage & Databases -> D1)
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "REPLACE_WITH_DATABASE_NAME",
-      "database_id": "REPLACE_WITH_DATABASE_ID"
+      "database_name": "recipe-box-database",
+      "database_id": "d0e67d37-2047-4195-928b-05287a16cd54"
     }
   ],
 
-  // Logs and traces in the dashboard. Handy when a deploy misbehaves.
+  // Logs and traces in the dashboard, for when a deploy misbehaves.
   "observability": {
     "enabled": true
   }
 
-  // env.ADMIN_TOKEN is deliberately absent. It is a secret, so it lives in
+  // env.ADMIN_TOKEN is deliberately absent. It is a secret, so it stays in
   // Settings -> Variables and Secrets, never in a file you commit.
 }

@@ -326,11 +326,18 @@ body{ padding-top:env(safe-area-inset-top); }
 .fcount.zero { visibility:hidden; }
 .search-filter.on .fcount { background:#fff; color:var(--accent); }
 .chip-clear { border-style:dashed; }
-/* A visible track rather than an overlay bar that only surfaces mid-scroll,
-   so expanding a tree shows straight away that there is more below. iOS
-   still draws its own overlay indicator on touch; flashFilterScrollbar()
-   below handles that case. */
-.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain; margin:4px 0 12px;
+/* iOS draws its scroll indicator itself and only while a scroll is in
+   flight, so nothing we do to the scrollbar shows up when a tree expands.
+   A fade along the bottom edge is drawn by us instead: it appears the
+   moment there is more list below the fold and goes as you reach the end,
+   which is the thing the scrollbar was meant to tell you. The scrollbar
+   rules stay for desktop, where a real one is drawn and is useful. */
+.filter-scroll { position:relative; margin:4px 0 12px; }
+.filter-scroll::after { content:""; position:absolute; left:0; right:0; bottom:0; height:30px;
+  background:linear-gradient(to top, #fff 15%, rgba(255,255,255,0)); pointer-events:none;
+  opacity:0; transition:opacity .18s ease; }
+.filter-scroll.more::after { opacity:1; }
+.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:rgba(34,31,28,.28) transparent; }
 .filter-body::-webkit-scrollbar { width:9px; }
 .filter-body::-webkit-scrollbar-track { background:transparent; }
@@ -1629,9 +1636,10 @@ function FiltersModalHTML() {
       (c.groups || []).map(g => group(g, catPanelKey(c))).join("") +
     '</details>').join("");
   const html = modalShell("Filters",
-    '<div class="filter-body">' + body + '</div>' +
+    '<div class="filter-scroll"><div class="filter-body" onscroll="updateFilterScrollHint()">' +
+      body + '</div></div>' +
     '<div class="edit-actions">' +
-      '<button class="btn" onclick="Actions.clearFilters(); Actions.closeModal();">Clear selected tags</button>' +
+      '<button class="btn" onclick="Actions.clearFilters()">Clear selected tags</button>' +
       '<button class="btn btn-primary" onclick="Actions.closeModal()">Done</button>' +
     '</div>');
   state._filterList = flat;
@@ -1903,7 +1911,7 @@ function renderModal() {
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
   else if (state.modal === "account") root.innerHTML = AccountModalHTML();
   else if (state.modal === "owner") root.innerHTML = OwnerModalHTML();
-  else if (state.modal === "filters") root.innerHTML = FiltersModalHTML();
+  else if (state.modal === "filters") { root.innerHTML = FiltersModalHTML(); updateFilterScrollHint(); }
   else if (state.modal === "actions") root.innerHTML = ActionsModalHTML();
   else if (state.modal === "conflict") root.innerHTML = ConflictModalHTML();
   else if (state.modal === "locked") root.innerHTML = LockedModalHTML();
@@ -2100,28 +2108,32 @@ Actions.removeDraftTag = function(i) {
   renderApp();
 };
 Actions.openFilters = function() { state.filterSearch = ""; seedFilterPanels(); Actions.openModal("filters"); };
-Actions.clearFilters = function() { state.activeTags = []; renderApp(); };
+/* Clearing is a reset of the whole menu, not just the chips: every tree
+   folds back up so you are looking at the same short list you started with. */
+Actions.clearFilters = function() {
+  state.activeTags = [];
+  state._fopen = {};
+  renderApp();
+};
 Actions.setPanel = function(i, open) {
   const k = (state._panelKeys || [])[i];
   if (k === undefined) return;
   if (open) state._fopen[k] = true; else delete state._fopen[k];
-  flashFilterScrollbar();
+  updateFilterScrollHint();
 };
-/* Opening or closing a tree changes how much there is to scroll, but an
-   overlay scrollbar only draws itself while a scroll is actually happening,
-   so the bar sits stale until the next touch. Scrolling one pixel and back
-   over two frames is enough to make it redraw at the new proportions, and is
-   far too small to see. Skipped entirely when there is nothing to scroll. */
-function flashFilterScrollbar() {
+/* Shows or hides the fade at the foot of the list. Called when a tree opens
+   or closes, while scrolling, and once the menu is first drawn. The frame
+   delay lets layout settle after a <details> toggles, so scrollHeight is the
+   new figure rather than the old one. */
+function updateFilterScrollHint() {
   const box = document.querySelector(".filter-body");
-  if (!box || typeof requestAnimationFrame !== "function") return;
-  requestAnimationFrame(function () {
-    const slack = box.scrollHeight - box.clientHeight;
-    if (slack <= 1) return;
-    const here = box.scrollTop;
-    box.scrollTop = here < slack ? here + 1 : here - 1;
-    requestAnimationFrame(function () { box.scrollTop = here; });
-  });
+  if (!box || !box.parentNode || !box.parentNode.classList) return;
+  const apply = function () {
+    const left = box.scrollHeight - box.clientHeight - box.scrollTop;
+    box.parentNode.classList.toggle("more", left > 4);
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply);
+  else apply();
 }
 function toggleActiveTag(t) {
   state.activeTags = state.activeTags.some(x => x.toLowerCase() === String(t).toLowerCase())

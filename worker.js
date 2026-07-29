@@ -898,6 +898,16 @@ function QRSvgHTML(px) {
 
 const TAG_TREE = ${JSON.stringify(TAG_TREE)};
 const TAG_MIGRATION = ${JSON.stringify(TAG_MIGRATION)};
+
+/* The three functions below are shared with the server by stringifying them
+   into this page. Wrangler bundles the Worker with esbuild, which has
+   keepNames on, so it rewrites every function as __name(fn, "fn") to
+   preserve the name through minification. That helper is defined at the top
+   of the Worker bundle - but toString() carries the calls here, where it
+   does not exist, and the whole script dies on the first one.
+   Defining a no-op locally costs nothing and makes this page independent of
+   how, or whether, the Worker was bundled. */
+var __name = function (target) { return target; };
 ${buildTagIndex.toString()}
 const TAG_INDEX = buildTagIndex();
 ${canonicalTag.toString()}

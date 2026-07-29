@@ -326,7 +326,16 @@ body{ padding-top:env(safe-area-inset-top); }
 .fcount.zero { visibility:hidden; }
 .search-filter.on .fcount { background:#fff; color:var(--accent); }
 .chip-clear { border-style:dashed; }
-.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain; margin:4px 0 12px; }
+/* A visible track rather than an overlay bar that only surfaces mid-scroll,
+   so expanding a tree shows straight away that there is more below. iOS
+   still draws its own overlay indicator on touch; flashFilterScrollbar()
+   below handles that case. */
+.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain; margin:4px 0 12px;
+  scrollbar-width:thin; scrollbar-color:rgba(34,31,28,.28) transparent; }
+.filter-body::-webkit-scrollbar { width:9px; }
+.filter-body::-webkit-scrollbar-track { background:transparent; }
+.filter-body::-webkit-scrollbar-thumb { background:rgba(34,31,28,.28); border-radius:5px;
+  border:2px solid transparent; background-clip:content-box; }
 .fcat { border-bottom:1px solid rgba(0,0,0,.08); }
 .fcat > summary { cursor:pointer; padding:11px 2px; font-weight:600; list-style:none; display:flex;
   align-items:center; line-height:19px; }
@@ -382,59 +391,6 @@ body{ padding-top:env(safe-area-inset-top); }
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
-<!-- Startup error trap. Runs before the app script, so a parse error in that
-     script surfaces here instead of leaving a white screen with nothing to
-     go on. Harmless once everything works: the app overwrites #app on its
-     first render and this never shows. -->
-<script>
-(function () {
-  var shown = false;
-  /* No backslash escapes anywhere in here. This script sits inside a template
-     literal back in worker.js, which eats them, so line breaks are built from
-     real elements instead of newline characters. */
-  function paint(rows, colour) {
-    var el = document.getElementById("app");
-    if (!el) return;
-    var out = "";
-    for (var i = 0; i < rows.length; i++) {
-      var safe = String(rows[i]).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-      out += "<div>" + (safe === "" ? "&nbsp;" : safe) + "</div>";
-    }
-    el.innerHTML =
-      '<div style="padding:24px; font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;' +
-      ' color:' + colour + '; word-break:break-word">' + out + "</div>";
-  }
-  paint(["STAGE 1: page loaded, waiting for the app script..."], "#8a8178");
-  function show(rows) {
-    if (shown) return;
-    shown = true;
-    paint(["The app failed to start.", ""].concat(rows), "#8f2d24");
-  }
-  window.addEventListener("error", function (e) {
-    show([
-      e.message || "Error",
-      "",
-      "file: " + (e.filename || "inline"),
-      "line: " + (e.lineno || 0) + ":" + (e.colno || 0)
-    ]);
-  });
-  window.addEventListener("unhandledrejection", function (e) {
-    var r = e.reason;
-    show(["Unhandled rejection:", (r && (r.message || r)) || "unknown"]);
-  });
-  window.addEventListener("load", function () {
-    setTimeout(function () {
-      if (shown) return;
-      if (typeof window.renderApp !== "function") {
-        show([
-          "STAGE 2: the app script did not execute.",
-          "It was served but its contents never ran."
-        ]);
-      }
-    }, 1500);
-  });
-})();
-</script>
 
 <script type="text/plain" id="import-prompt-template">You are converting one recipe into a single-line JSON object for a personal recipe app. {{SOURCE}} Then output ONE single-line JSON object and nothing else — no markdown code fences, no explanation before or after, no pretty-printing or indentation.
 
@@ -2149,7 +2105,24 @@ Actions.setPanel = function(i, open) {
   const k = (state._panelKeys || [])[i];
   if (k === undefined) return;
   if (open) state._fopen[k] = true; else delete state._fopen[k];
+  flashFilterScrollbar();
 };
+/* Opening or closing a tree changes how much there is to scroll, but an
+   overlay scrollbar only draws itself while a scroll is actually happening,
+   so the bar sits stale until the next touch. Scrolling one pixel and back
+   over two frames is enough to make it redraw at the new proportions, and is
+   far too small to see. Skipped entirely when there is nothing to scroll. */
+function flashFilterScrollbar() {
+  const box = document.querySelector(".filter-body");
+  if (!box || typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(function () {
+    const slack = box.scrollHeight - box.clientHeight;
+    if (slack <= 1) return;
+    const here = box.scrollTop;
+    box.scrollTop = here < slack ? here + 1 : here - 1;
+    requestAnimationFrame(function () { box.scrollTop = here; });
+  });
+}
 function toggleActiveTag(t) {
   state.activeTags = state.activeTags.some(x => x.toLowerCase() === String(t).toLowerCase())
     ? state.activeTags.filter(x => x.toLowerCase() !== String(t).toLowerCase())
@@ -3541,31 +3514,6 @@ export default {
 
     if (url.pathname === "/icon.png") return iconResponse();
 
-    /* Reports on the HTML this Worker builds, as plain text so it is legible
-       on a phone. Tells us whether the page leaves here intact, which
-       separates a server problem from a browser one. Safe to delete later. */
-    if (url.pathname === "/__debug") {
-      const h = typeof APP_HTML === "string" ? APP_HTML : "";
-      const count = re => (h.match(re) || []).length;
-      const report = [
-        "html length:        " + h.length,
-        "opening <script>:   " + count(/<script/g),
-        "closing </script>:  " + count(/<\/script/g),
-        "ends with </html>:  " + h.trim().endsWith("</html>"),
-        "has stage-1 trap:   " + h.includes("STAGE 1"),
-        "has renderApp():    " + h.includes("function renderApp("),
-        "has init() call:    " + h.includes("async function init()"),
-        "",
-        "--- first 200 chars ---",
-        h.slice(0, 200),
-        "",
-        "--- last 200 chars ---",
-        h.slice(-200)
-      ];
-      return new Response(report.join("\n"), {
-        headers: { "Content-Type": "text/plain; charset=utf-8" }
-      });
-    }
     if (url.pathname === "/manifest.webmanifest") {
       return new Response(MANIFEST, {
         headers: { "Content-Type": "application/manifest+json", "Cache-Control": "public, max-age=86400" }

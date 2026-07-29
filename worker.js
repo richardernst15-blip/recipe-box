@@ -3519,6 +3519,32 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/icon.png") return iconResponse();
+
+    /* Reports on the HTML this Worker builds, as plain text so it is legible
+       on a phone. Tells us whether the page leaves here intact, which
+       separates a server problem from a browser one. Safe to delete later. */
+    if (url.pathname === "/__debug") {
+      const h = typeof APP_HTML === "string" ? APP_HTML : "";
+      const count = re => (h.match(re) || []).length;
+      const report = [
+        "html length:        " + h.length,
+        "opening <script>:   " + count(/<script/g),
+        "closing </script>:  " + count(/<\/script/g),
+        "ends with </html>:  " + h.trim().endsWith("</html>"),
+        "has stage-1 trap:   " + h.includes("STAGE 1"),
+        "has renderApp():    " + h.includes("function renderApp("),
+        "has init() call:    " + h.includes("async function init()"),
+        "",
+        "--- first 200 chars ---",
+        h.slice(0, 200),
+        "",
+        "--- last 200 chars ---",
+        h.slice(-200)
+      ];
+      return new Response(report.join("\n"), {
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }
     if (url.pathname === "/manifest.webmanifest") {
       return new Response(MANIFEST, {
         headers: { "Content-Type": "application/manifest+json", "Cache-Control": "public, max-age=86400" }

@@ -379,6 +379,36 @@ body{ padding-top:env(safe-area-inset-top); }
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
+<!-- Startup error trap. Runs before the app script, so a parse error in that
+     script surfaces here instead of leaving a white screen with nothing to
+     go on. Harmless once everything works: the app overwrites #app on its
+     first render and this never shows. -->
+<script>
+(function () {
+  var shown = false;
+  function show(msg) {
+    if (shown) return;
+    shown = true;
+    var el = document.getElementById("app");
+    if (!el) return;
+    var safe = String(msg).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    el.innerHTML =
+      '<div style="padding:24px; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      ' color:#8f2d24; white-space:pre-wrap; word-break:break-word">' +
+      "The app failed to start.\n\n" + safe + "</div>";
+  }
+  window.addEventListener("error", function (e) {
+    show((e.message || "Error") +
+      (e.filename ? "\n\nfile: " + e.filename : "") +
+      (e.lineno ? "\nline: " + e.lineno + ":" + (e.colno || 0) : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    show("Unhandled rejection:\n" + ((r && (r.stack || r.message)) || r));
+  });
+})();
+</script>
+
 <script type="text/plain" id="import-prompt-template">You are converting one recipe into a single-line JSON object for a personal recipe app. {{SOURCE}} Then output ONE single-line JSON object and nothing else — no markdown code fences, no explanation before or after, no pretty-printing or indentation.
 
 Follow this schema exactly:

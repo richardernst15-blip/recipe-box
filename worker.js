@@ -281,18 +281,21 @@ body{ padding-top:env(safe-area-inset-top); }
 .add-friend-row input{ flex:1; min-width:0; padding:10px 11px; border-radius:9px; border:1px solid var(--border); font-size:15px; background:#fff; }
 
 /* modal */
-/* inset:0 pins all four edges to the same box, so the grey is exactly the
-   viewport and cannot come up short. Do not swap this for top + a height in
-   vh or dvh: the top would anchor to one viewport and the height measure a
-   different one, and the difference shows as a bar along the bottom. The
-   page beneath is held still by the scroll lock, which is what keeps a
-   toolbar from sliding in and moving the overlay in the first place. */
+/* Centred at every width, so there is always a band of grey above and below
+   the card. Two rules keep it honest:
+     - inset:0 pins all four edges of the overlay to the same box, so the grey
+       is exactly the viewport. Never swap this for top + a height in vh or
+       dvh: the top would anchor to one viewport while the height measured a
+       different one, and the gap shows as a bar along the bottom.
+     - the card is capped with max-height:100%, a percentage of that same
+       overlay rather than a viewport unit, so the two can never disagree.
+   The safe-area padding keeps the grey clear of the notch and the home
+   indicator instead of tucking underneath them. */
 .modal-overlay{ position:fixed; inset:0; background:rgba(34,31,28,.5); display:flex;
-  align-items:flex-end; justify-content:center; z-index:80; overscroll-behavior:contain; }
-@media (min-width:640px){ .modal-overlay{ align-items:center; padding:20px; } }
-.modal-box{ background:#fff; width:100%; max-width:560px; max-height:92vh; max-height:92dvh; overflow-y:auto;
-  overscroll-behavior:contain; border-radius:16px 16px 0 0; padding:22px; }
-@media (min-width:640px){ .modal-box{ border-radius:16px; } }
+  align-items:center; justify-content:center; z-index:80; overscroll-behavior:contain;
+  padding:calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom)); }
+.modal-box{ background:#fff; width:100%; max-width:560px; max-height:100%; overflow-y:auto;
+  overscroll-behavior:contain; border-radius:16px; padding:22px; }
 .modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
 .modal-head h3{ margin:0; font-size:19px; }
 .modal-close{ border:none; background:none; color:var(--ink-muted); cursor:pointer; padding:4px; }

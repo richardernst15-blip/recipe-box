@@ -386,39 +386,47 @@ body{ padding-top:env(safe-area-inset-top); }
 <script>
 (function () {
   var shown = false;
-  function paint(msg, colour) {
+  /* No backslash escapes anywhere in here. This script sits inside a template
+     literal back in worker.js, which eats them, so line breaks are built from
+     real elements instead of newline characters. */
+  function paint(rows, colour) {
     var el = document.getElementById("app");
     if (!el) return;
-    var safe = String(msg).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    var out = "";
+    for (var i = 0; i < rows.length; i++) {
+      var safe = String(rows[i]).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      out += "<div>" + (safe === "" ? "&nbsp;" : safe) + "</div>";
+    }
     el.innerHTML =
-      '<div style="padding:24px; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;' +
-      ' color:' + colour + '; white-space:pre-wrap; word-break:break-word">' + safe + "</div>";
+      '<div style="padding:24px; font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      ' color:' + colour + '; word-break:break-word">' + out + "</div>";
   }
-  /* Painted the moment this runs. If the screen is blank instead of showing
-     this, the page never got as far as executing any script at all. */
-  paint("STAGE 1: page loaded, waiting for the app script...", "#8a8178");
-  function show(msg) {
+  paint(["STAGE 1: page loaded, waiting for the app script..."], "#8a8178");
+  function show(rows) {
     if (shown) return;
     shown = true;
-    paint("The app failed to start.\n\n" + msg, "#8f2d24");
+    paint(["The app failed to start.", ""].concat(rows), "#8f2d24");
   }
   window.addEventListener("error", function (e) {
-    show((e.message || "Error") +
-      (e.filename ? "\n\nfile: " + e.filename : "") +
-      (e.lineno ? "\nline: " + e.lineno + ":" + (e.colno || 0) : ""));
+    show([
+      e.message || "Error",
+      "",
+      "file: " + (e.filename || "inline"),
+      "line: " + (e.lineno || 0) + ":" + (e.colno || 0)
+    ]);
   });
   window.addEventListener("unhandledrejection", function (e) {
     var r = e.reason;
-    show("Unhandled rejection:\n" + ((r && (r.stack || r.message)) || r));
+    show(["Unhandled rejection:", (r && (r.message || r)) || "unknown"]);
   });
-  /* The app script ends by calling init(). If that never happens, this fires
-     and tells us the script tag was present but did not execute. */
   window.addEventListener("load", function () {
     setTimeout(function () {
       if (shown) return;
       if (typeof window.renderApp !== "function") {
-        show("STAGE 2: the app script did not execute.\n\n" +
-          "The script tag was served but its contents never ran.");
+        show([
+          "STAGE 2: the app script did not execute.",
+          "It was served but its contents never ran."
+        ]);
       }
     }, 1500);
   });

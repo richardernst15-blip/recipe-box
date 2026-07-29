@@ -386,16 +386,21 @@ body{ padding-top:env(safe-area-inset-top); }
 <script>
 (function () {
   var shown = false;
-  function show(msg) {
-    if (shown) return;
-    shown = true;
+  function paint(msg, colour) {
     var el = document.getElementById("app");
     if (!el) return;
     var safe = String(msg).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     el.innerHTML =
       '<div style="padding:24px; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;' +
-      ' color:#8f2d24; white-space:pre-wrap; word-break:break-word">' +
-      "The app failed to start.\n\n" + safe + "</div>";
+      ' color:' + colour + '; white-space:pre-wrap; word-break:break-word">' + safe + "</div>";
+  }
+  /* Painted the moment this runs. If the screen is blank instead of showing
+     this, the page never got as far as executing any script at all. */
+  paint("STAGE 1: page loaded, waiting for the app script...", "#8a8178");
+  function show(msg) {
+    if (shown) return;
+    shown = true;
+    paint("The app failed to start.\n\n" + msg, "#8f2d24");
   }
   window.addEventListener("error", function (e) {
     show((e.message || "Error") +
@@ -405,6 +410,17 @@ body{ padding-top:env(safe-area-inset-top); }
   window.addEventListener("unhandledrejection", function (e) {
     var r = e.reason;
     show("Unhandled rejection:\n" + ((r && (r.stack || r.message)) || r));
+  });
+  /* The app script ends by calling init(). If that never happens, this fires
+     and tells us the script tag was present but did not execute. */
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      if (shown) return;
+      if (typeof window.renderApp !== "function") {
+        show("STAGE 2: the app script did not execute.\n\n" +
+          "The script tag was served but its contents never ran.");
+      }
+    }, 1500);
   });
 })();
 </script>

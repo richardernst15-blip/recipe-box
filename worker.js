@@ -844,7 +844,7 @@ function WelcomeViewHTML() {
       '<p class="lede">Pick a name your friends will see on your ratings and comments, then start a cookbook — or enter an existing Cookbook ID to open it on this device or join a household cookbook.</p>' +
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
       '<div class="field"><label>Username</label>' +
-        '<input type="text" id="w-username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="richard" value="' + esc(state._wUsername || "") + '" />' +
+        '<input type="text" id="w-username" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wUsername || "") + '" />' +
       '</div>' +
       '<div class="field"><label>Cookbook ID</label>' +
         '<input type="text" id="w-cookbook" class="font-mono code-box" style="text-transform:uppercase" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(state._wCookbook !== undefined ? state._wCookbook : suggested) + '" />' +
@@ -1937,9 +1937,26 @@ function syncViewportVars() {
   root.style.setProperty("--vv-height", vv.height + "px");
 }
 
+/* The band along the foot of a home-screen app is iOS chrome, not page. It
+   lives outside the web view, so no stylesheet reaches it - iOS fills it from
+   the theme colour instead. At the page cream it is invisible in normal use,
+   which is why it went unnoticed, and obvious the moment a modal dims
+   everything except it.
+   Repainting it with the colour the overlay composites to closes the seam:
+   cream under rgba(34,31,28,.5) is #8a867e. Elsewhere the tag only tints
+   browser chrome that is already the right colour, so this costs nothing. */
+const CHROME_REST = "#f2ede1";
+const CHROME_DIMMED = "#8a867e";
+function setChromeTint(dim) {
+  if (typeof document === "undefined") return;
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute("content", dim ? CHROME_DIMMED : CHROME_REST);
+}
+
 function setScrollLock(want) {
   const b = document.body;
   if (!b) return;
+  setChromeTint(!!want);
   if (want) {
     /* Re-measured on the way in, then kept current by the listeners in the
        init block for as long as the modal is up. */
@@ -3574,6 +3591,12 @@ const MANIFEST = JSON.stringify({
   short_name: "Recipe Box",
   start_url: "/",
   scope: "/",
+  /* display_override is the standards-based way to ask for the screen with no
+     system chrome at all; display stays as the fallback for anything that
+     does not read it. Note this is also what Android acts on - there it will
+     hide the status bar outright, clock and battery included. Drop the
+     override line if that is not what you want on other devices. */
+  display_override: ["fullscreen", "standalone"],
   display: "standalone",
   background_color: "#f2ede1",
   theme_color: "#f2ede1",

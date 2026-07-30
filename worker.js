@@ -282,16 +282,26 @@ body{ padding-top:env(safe-area-inset-top); }
 
 /* modal */
 /* Centred at every width, so there is always a band of grey above and below
-   the card. Two rules keep it honest:
-     - inset:0 pins all four edges of the overlay to the same box, so the grey
-       is exactly the viewport. Never swap this for top + a height in vh or
-       dvh: the top would anchor to one viewport while the height measured a
-       different one, and the gap shows as a bar along the bottom.
+   the card. Three rules keep it honest:
+     - the overlay is sized from the viewport that is actually on screen,
+       reported by visualViewport and handed over in --vv-*. inset:0 looks
+       like the safe choice but sizes a fixed element to the initial
+       containing block, which on iOS Safari is the small viewport - the
+       height with the toolbar fully expanded. Once the toolbar has
+       minimised, the visible area is taller than that and the extra strip
+       shows as a cream bar along the bottom.
+     - top and height come from the same measurement, so they cannot anchor
+       to different viewports. That was the real hazard behind the old
+       warning against mixing top with a vh/dvh height - not the two
+       properties themselves.
      - the card is capped with max-height:100%, a percentage of that same
        overlay rather than a viewport unit, so the two can never disagree.
-   The safe-area padding keeps the grey clear of the notch and the home
-   indicator instead of tucking underneath them. */
-.modal-overlay{ position:fixed; inset:0; background:rgba(34,31,28,.5); display:flex;
+   With no visualViewport the vars stay unset and the fallbacks below are
+   exactly the old inset:0 box. The safe-area padding keeps the grey clear of
+   the notch and the home indicator instead of tucking underneath them. */
+.modal-overlay{ position:fixed; top:var(--vv-top,0px); left:var(--vv-left,0px);
+  width:var(--vv-width,100%); height:var(--vv-height,100%);
+  background:rgba(34,31,28,.5); display:flex;
   align-items:center; justify-content:center; z-index:80; overscroll-behavior:contain;
   padding:calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom)); }
 .modal-box{ background:#fff; width:100%; max-width:560px; max-height:100%; overflow-y:auto;
@@ -337,7 +347,12 @@ body{ padding-top:env(safe-area-inset-top); }
   background:linear-gradient(to top, #fff 15%, rgba(255,255,255,0)); pointer-events:none;
   opacity:0; transition:opacity .18s ease; }
 .filter-scroll.more::after { opacity:1; }
-.filter-body { max-height:60vh; max-height:60dvh; overflow-y:auto; overscroll-behavior:contain;
+/* Capped against the same measurement the overlay uses. A dvh here was the
+   second half of the bottom-bar problem: the list could claim more height
+   than the card had to give, so the card scrolled instead of the list and
+   the footer buttons drifted off the visible area. */
+.filter-body { max-height:60vh; max-height:60dvh; max-height:calc(var(--vv-height,100dvh) * .6);
+  overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:rgba(34,31,28,.28) transparent; }
 .filter-body::-webkit-scrollbar { width:9px; }
 .filter-body::-webkit-scrollbar-track { background:transparent; }
@@ -1878,10 +1893,32 @@ function ActionsModalHTML() {
    it re-flows every time a filter changes, the document gets shorter, and the
    browser answers by sliding its toolbar back in - which drags the fixed
    overlay with it. Freezing the page ends the whole argument. */
+/* Publishes the on-screen viewport to CSS as --vv-*. Everything a fixed
+   overlay needs comes from one object read at one moment, so nothing can
+   drift out of step. offsetTop is what the visible area has slid down by,
+   which is the right value for a fixed element's top because fixed positions
+   against the layout viewport.
+   Also worth having for its own sake: while the keyboard is up, vv.height
+   stops above it, so a modal centres in the room that is left rather than
+   sitting half underneath the keys. */
+function syncViewportVars() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const vv = window.visualViewport;
+  const root = document.documentElement;
+  if (!vv || !root) return;
+  root.style.setProperty("--vv-top", vv.offsetTop + "px");
+  root.style.setProperty("--vv-left", vv.offsetLeft + "px");
+  root.style.setProperty("--vv-width", vv.width + "px");
+  root.style.setProperty("--vv-height", vv.height + "px");
+}
+
 function setScrollLock(want) {
   const b = document.body;
   const held = b.getAttribute("data-scroll-lock");
   if (want) {
+    /* Measured before the page is pinned, and kept up to date by the
+       listeners below for as long as the modal is open. */
+    syncViewportVars();
     if (held !== null) return;
     const y = window.scrollY || window.pageYOffset || 0;
     b.setAttribute("data-scroll-lock", String(y));
@@ -2630,6 +2667,18 @@ if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", function() {
     if (!document.hidden) pollWatched();
   });
+}
+/* The toolbar sliding in or out, the keyboard arriving, a rotation: each one
+   changes the visible area without the page laying out again, so the overlay
+   has to be told. resize covers the height changes and scroll covers the
+   visible area shifting under a pinch. Cheap enough to leave running rather
+   than wiring up and tearing down around each modal. */
+if (typeof window !== "undefined" && window.visualViewport && window.addEventListener) {
+  const vvport = window.visualViewport;
+  vvport.addEventListener("resize", syncViewportVars);
+  vvport.addEventListener("scroll", syncViewportVars);
+  window.addEventListener("orientationchange", syncViewportVars);
+  syncViewportVars();
 }
 /* Closing the tab should free the recipe rather than leave it locked for
    the full timeout. Best effort: this does not always fire on mobile,

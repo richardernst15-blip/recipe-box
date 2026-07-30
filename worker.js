@@ -100,7 +100,29 @@ body{
   -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent;
 }
 button, input, textarea, select { font-family:inherit; }
-body{ padding-top:env(safe-area-inset-top); }
+
+/* The document does not scroll. #app does.
+   The cream bar is the page rubber-banding: with the document scrollable, a
+   drag anywhere on the grey moved the library behind the filter menu, and a
+   drag past the end lifted the whole viewport - fixed overlay included -
+   leaving the canvas showing along the bottom. Nothing was wrong with the
+   size of the grey; it was being carried up off the screen.
+   Moving the scroll inside #app ends both halves of that. #modal-root is a
+   sibling of #app, not a child, so once the modal is up there is nothing
+   scrollable anywhere above it and a drag has nothing left to move - no
+   pinning the body, no restoring a scroll position, no jump when it closes.
+   overscroll-behavior stops the bounce at the ends of the list as well, so
+   the canvas never gets a chance to show through.
+   It settles the viewport for good too: an unscrollable document means
+   Safari stops hiding and re-showing its toolbar, so the box a fixed element
+   measures itself against stops changing size underneath it. */
+html{ height:100%; overflow:hidden; overscroll-behavior:none; }
+body{ height:100%; overflow:hidden; overscroll-behavior:none; }
+/* The notch padding moves onto the scroller with the content it is there to
+   protect. Body is now a plain full-height shell, and padding on it would be
+   taken out of that height rather than added to it. */
+#app{ height:100%; overflow-y:auto; overscroll-behavior-y:contain;
+  padding-top:env(safe-area-inset-top); }
 .font-display{ font-family:Georgia,"Iowan Old Style","Palatino Linotype",serif; font-weight:700; }
 .font-mono{ font-family:"SF Mono",Menlo,Consolas,monospace; }
 .wrap{ max-width:960px; margin:0 auto; padding:0 16px 110px; }
@@ -284,15 +306,15 @@ body{ padding-top:env(safe-area-inset-top); }
 /* Centred at every width, so there is always a band of grey above and below
    the card. Three rules keep it honest:
      - the overlay is sized from the viewport that is actually on screen,
-       reported by visualViewport and handed over in --vv-*. inset:0 looks
-       like the safe choice but sizes a fixed element to the initial
-       containing block, which on iOS Safari is the small viewport - the
-       height with the toolbar fully expanded. Once the toolbar has
-       minimised, the visible area is taller than that and the extra strip
-       shows as a cream bar along the bottom.
-     - top and height come from the same measurement, so they cannot anchor
-       to different viewports. That was the real hazard behind the old
-       warning against mixing top with a vh/dvh height - not the two
+       reported by visualViewport and handed over in --vv-*. The unscrollable
+       document above is what stops the grey from being carried off the
+       screen; this is what keeps it the right size while it is there, and it
+       is the part that earns its keep when the keyboard is up - vv.height
+       stops above the keys, so a modal centres in the room that is left
+       rather than sitting half underneath them.
+     - top and height come from one reading of one object, so they cannot
+       anchor to different viewports. That was the real hazard behind the old
+       warning against mixing top with a vh/dvh height, not the two
        properties themselves.
      - the card is capped with max-height:100%, a percentage of that same
        overlay rather than a viewport unit, so the two can never disagree.
@@ -1889,10 +1911,13 @@ function ActionsModalHTML() {
     '</div>');
 }
 
-/* While a modal is up the page beneath is pinned where it stands. Left live,
-   it re-flows every time a filter changes, the document gets shorter, and the
-   browser answers by sliding its toolbar back in - which drags the fixed
-   overlay with it. Freezing the page ends the whole argument. */
+/* Nothing left to pin. The page beneath cannot move while a modal is up
+   because #app is the only scroller and the modal is not inside it.
+   This used to set the body to fixed with a negative top and put the scroll
+   position back on close, which is what the app-shell layout now does for
+   free - and without the jump that came from taking the body out of flow.
+   The attribute stays as a hook for CSS and for anything that wants to ask
+   whether a modal is up. */
 /* Publishes the on-screen viewport to CSS as --vv-*. Everything a fixed
    overlay needs comes from one object read at one moment, so nothing can
    drift out of step. offsetTop is what the visible area has slid down by,
@@ -1914,28 +1939,14 @@ function syncViewportVars() {
 
 function setScrollLock(want) {
   const b = document.body;
-  const held = b.getAttribute("data-scroll-lock");
+  if (!b) return;
   if (want) {
-    /* Measured before the page is pinned, and kept up to date by the
-       listeners below for as long as the modal is open. */
+    /* Re-measured on the way in, then kept current by the listeners in the
+       init block for as long as the modal is up. */
     syncViewportVars();
-    if (held !== null) return;
-    const y = window.scrollY || window.pageYOffset || 0;
-    b.setAttribute("data-scroll-lock", String(y));
-    b.style.position = "fixed";
-    b.style.top = (-y) + "px";
-    b.style.left = "0";
-    b.style.right = "0";
-    b.style.width = "100%";
+    b.setAttribute("data-scroll-lock", "1");
   } else {
-    if (held === null) return;
     b.removeAttribute("data-scroll-lock");
-    b.style.position = "";
-    b.style.top = "";
-    b.style.left = "";
-    b.style.right = "";
-    b.style.width = "";
-    window.scrollTo(0, Number(held) || 0);
   }
 }
 

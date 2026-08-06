@@ -1524,7 +1524,7 @@ const state = {
   /* Notifications on this device. status is one of: unknown, unsupported,
      install (iOS wants the app on the Home Screen first), off, on, denied,
      unavailable (no keys configured on the server). */
-  push: { status: "unknown", key: "", busy: false },
+  push: { status: "unknown", key: "", busy: false, kinds: [], endpoint: "" },
   mates: [],
   friends: [],
   incoming: [],
@@ -2972,6 +2972,16 @@ function installedApp() {
       window.matchMedia("(display-mode: fullscreen)").matches;
   } catch (e) { return false; }
 }
+/* The six things a notification can be about, in the order the panel shows
+   them. The keys are the server's; the words are ours. */
+const PUSH_KIND_LABELS = [
+  ["friendAsk", "Friend requests"],
+  ["friendYes", "When someone accepts your friend request"],
+  ["mealAsk", "Meal invitations"],
+  ["mealYes", "When a guest accepts your invitation"],
+  ["cook", "When someone cooks one of your recipes"],
+  ["recipe", "When a friend shares a new recipe"]
+];
 function pushKeyBytes(s) {
   const t = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
   const pad = (t.length % 4) ? "====".slice(t.length % 4) : "";
@@ -2998,7 +3008,19 @@ async function refreshPushState() {
   if (!reg) { p.status = "unsupported"; return; }
   let sub = null;
   try { sub = await reg.pushManager.getSubscription(); } catch (e) { sub = null; }
+  p.endpoint = sub ? sub.endpoint : "";
   p.status = sub ? "on" : "off";
+  if (sub) {
+    try {
+      const d = await API("push/status", { endpoint: sub.endpoint });
+      /* The server not knowing this endpoint means the browser is holding a
+         subscription we have no row for - a database that was reset, or a
+         sign-in as somebody else. Sign it up again rather than sit there
+         claiming to be on and never ringing. */
+      if (d && d.subscribed) p.kinds = d.kinds || [];
+      else { p.status = "off"; p.endpoint = ""; }
+    } catch (e) {}
+  }
 }
 async function enablePush() {
   const p = state.push;
@@ -3014,11 +3036,13 @@ async function enablePush() {
     });
   }
   const j = sub.toJSON ? sub.toJSON() : { keys: {} };
-  await API("push/subscribe", {
+  const d = await API("push/subscribe", {
     endpoint: sub.endpoint,
     p256dh: (j.keys && j.keys.p256dh) || "",
     auth: (j.keys && j.keys.auth) || ""
   });
+  p.endpoint = sub.endpoint;
+  p.kinds = (d && d.kinds) || [];
   p.status = "on";
 }
 async function disablePush() {
@@ -3031,7 +3055,26 @@ async function disablePush() {
     try { await API("push/unsubscribe", { endpoint: sub.endpoint }); } catch (e) {}
     try { await sub.unsubscribe(); } catch (e) {}
   }
+  state.push.endpoint = "";
   state.push.status = "off";
+}
+
+/* One switch flipped. Written straight through rather than gathered up and
+   saved, because there is no Save button here and there should not be one. */
+async function savePushKinds(kind, on) {
+  const p = state.push;
+  const next = PUSH_KIND_LABELS
+    .map(function (pair) { return pair[0]; })
+    .filter(function (k) { return k === kind ? on : p.kinds.indexOf(k) >= 0; });
+  const before = p.kinds;
+  p.kinds = next;
+  try {
+    const d = await API("push/prefs", { endpoint: p.endpoint, kinds: next });
+    p.kinds = (d && d.kinds) || next;
+  } catch (e) {
+    p.kinds = before;
+    throw e;
+  }
 }
 
 /* Where a tapped notification lands. Deliberately addressed by the thing
@@ -3044,6 +3087,18 @@ async function openPushTarget(spec) {
   const kind = at < 0 ? s : s.slice(0, at);
   const id = at < 0 ? "" : s.slice(at + 1);
   if (kind === "friends") { Actions.openFriends(); return; }
+  /* A batch of recipes has no one page, so it opens the shelf they landed
+     on, the same place accepting a friend request leaves you. */
+  if (kind === "shelf") {
+    let label = "";
+    try { label = decodeURIComponent(id); } catch (e) { label = id; }
+    state.ownerFilter = label || "ours";
+    state.activeTags = [];
+    state.search = "";
+    state.view = "library";
+    renderApp();
+    return;
+  }
   if (kind === "meal") {
     if (!mealById(id)) { toast("That meal is no longer there"); renderApp(); return; }
     state.view = "calendar";
@@ -5574,9 +5629,19 @@ function PushSettingHTML() {
       (p.busy ? "disabled" : "") + ' onclick="Actions.togglePush()">' +
       icon("bell", 14) + " " + (p.busy ? "Working…" : (on ? "Turn off on this device" : "Turn on for this device")) +
       '</button>' +
-      line(on
-        ? "This device is signed up. You will hear about friend requests, meal invitations, replies to your invitations, and cooks logged on your recipes."
-        : "Hear about friend requests, meal invitations, replies to your invitations, and cooks logged on your recipes — without the app open.");
+      (on
+        ? '<p class="helper-text" style="margin-bottom:2px">This device is signed up. Choose what it tells you about:</p>' +
+          PUSH_KIND_LABELS.map(function (pair) {
+            const checked = p.kinds.indexOf(pair[0]) >= 0;
+            return '<label class="check-row"><input type="checkbox"' + (checked ? " checked" : "") +
+              (p.busy ? " disabled" : "") +
+              ' onchange="Actions.setPushKind(this.value, this.checked)" value="' + pair[0] + '" />' +
+              '<span>' + esc(pair[1]) + '</span></label>';
+          }).join("") +
+          (p.kinds.length ? "" :
+            '<p class="helper-text">Everything is switched off, so nothing will reach this device. ' +
+            'Turn one back on, or turn notifications off altogether.</p>')
+        : line("Hear about friend requests, meal invitations, replies to your invitations, cooks logged on your recipes, and recipes your friends share — without the app open."));
   }
   return '<div class="field"><label>Notifications</label>' + inner + '</div>';
 }
@@ -6766,6 +6831,11 @@ Actions.openModal = function(name) {
 Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); updateLibraryChrome(); };
 
 /* --- notifications on this device --- */
+Actions.setPushKind = async function(kind, on) {
+  try { await savePushKinds(kind, on === true); }
+  catch (e) { toast((e && e.message) || "That did not save"); }
+  renderModal();
+};
 Actions.togglePush = async function() {
   const p = state.push;
   if (p.busy) return;
@@ -9541,9 +9611,12 @@ const LATER_TABLES = [
      endpoint the browser hands out, because that is the only identifier the
      push service knows us by; a device that reinstalls gets a new one and the
      old row is dropped the first time it answers Gone. Held per person rather
-     than per cookbook: two people sharing a cookbook are still two phones. */
+     than per cookbook: two people sharing a cookbook are still two phones.
+     kinds is what that device wants to be told about, as a JSON list; empty
+     means it has never said, which is taken as all of them. */
   "CREATE TABLE IF NOT EXISTS push_subs ( endpoint TEXT PRIMARY KEY, username_lc TEXT NOT NULL, " +
-    "p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL )",
+    "p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL, " +
+    "kinds TEXT NOT NULL DEFAULT '' )",
   "CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subs(username_lc)",
   "CREATE TABLE IF NOT EXISTS recipe_marks ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
     "kind TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, " +
@@ -10105,6 +10178,42 @@ async function resolvePendingPins(env, cbA, cbB) {
    never be the reason a friend request or a cook log fails to save. */
 const PUSH_TTL = 86400;          /* a day: past that it is no longer news */
 const PUSH_FANOUT = 40;          /* D1 takes about fifty binds in one go */
+/* Everything a notification can be about. The client shows one switch per
+   entry, so this list and the labels beside them are the same six things. */
+const PUSH_KINDS = ["friendAsk", "friendYes", "mealAsk", "mealYes", "cook", "recipe"];
+
+function cleanKinds(value) {
+  const list = Array.isArray(value) ? value : [];
+  return PUSH_KINDS.filter(function (k) { return list.indexOf(k) >= 0; });
+}
+/* A stored list of nothing and a stored list never written are different
+   things: the first is somebody who turned everything off, the second is a
+   device from before there were switches. Only the second means all. */
+function wantsKind(row, kind) {
+  if (!kind) return true;
+  if (!row || !row.kinds) return true;
+  let list;
+  try { list = JSON.parse(row.kinds); } catch (e) { return true; }
+  if (!Array.isArray(list)) return true;
+  return list.indexOf(kind) >= 0;
+}
+/* The same reading, but for telling the client. A device that has never said
+   is shown every switch on, which is what it is actually getting. */
+function readKinds(stored) {
+  if (!stored) return PUSH_KINDS.slice();
+  try {
+    const list = JSON.parse(stored);
+    return Array.isArray(list) ? cleanKinds(list) : PUSH_KINDS.slice();
+  } catch (e) { return PUSH_KINDS.slice(); }
+}
+async function kindsFor(env, endpoint, usernameLc) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT kinds FROM push_subs WHERE endpoint = ? AND username_lc = ?"
+    ).bind(endpoint, usernameLc).first();
+    return readKinds(row && row.kinds);
+  } catch (e) { return PUSH_KINDS.slice(); }
+}
 
 function b64urlToBytes(s) {
   const t = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
@@ -10236,11 +10345,13 @@ async function pushToUsers(env, usernameLcs, msg) {
     let rows;
     try {
       rows = await env.DB.prepare(
-        "SELECT endpoint, p256dh, auth FROM push_subs WHERE username_lc IN (" +
+        "SELECT endpoint, p256dh, auth, kinds FROM push_subs WHERE username_lc IN (" +
         placeholders(slice.length) + ")"
       ).bind(...slice).all();
     } catch (e) { return; }
-    for (const sub of (rows && rows.results) || []) await sendOnePush(env, keys, sub, text);
+    for (const sub of (rows && rows.results) || []) {
+      if (wantsKind(sub, msg && msg.kind)) await sendOnePush(env, keys, sub, text);
+    }
   }
 }
 
@@ -10266,6 +10377,45 @@ async function pushToCookbooks(env, cookbookIds, exceptLc, msg) {
   try {
     await pushToUsers(env, await usersInCookbooks(env, cookbookIds, exceptLc), msg);
   } catch (e) {}
+}
+
+/* Which friends should hear that a recipe has appeared. Linking cookbooks
+   hands over everything already in them at once, and fifty recipes announced
+   fifty times is not news, it is a fault. So the moment of the handshake is
+   compared against the moment the recipe was written: anything that was
+   already there when you linked up belongs to the introduction, and only
+   what comes afterwards is worth a phone lighting up. A recipe made now
+   clears every handshake there is, which is why the ordinary case needs no
+   thought at all. */
+async function friendsToTell(env, cookbookId, createdAt) {
+  const rows = await env.DB.prepare(
+    "SELECT CASE WHEN requester_cb = ? THEN addressee_cb ELSE requester_cb END AS cb, updated_at " +
+    "FROM friendships WHERE status = 'accepted' AND (requester_cb = ? OR addressee_cb = ?)"
+  ).bind(cookbookId, cookbookId, cookbookId).all();
+  return ((rows && rows.results) || [])
+    .filter(function (r) { return r.updated_at && String(r.updated_at) < String(createdAt); })
+    .map(function (r) { return r.cb; });
+}
+/* The name a cookbook goes by on somebody else's shelf. */
+async function labelOfCookbook(env, cookbookId, fallback) {
+  try {
+    const map = await membersOf(env, [cookbookId]);
+    return householdLabel(map[cookbookId] || [fallback]);
+  } catch (e) { return fallback; }
+}
+async function announceRecipes(env, me, createdAt, one, count) {
+  const cbs = await friendsToTell(env, me.cookbookId, createdAt);
+  if (!cbs.length) return;
+  const label = await labelOfCookbook(env, me.cookbookId, me.username);
+  const msg = (count === 1 && one)
+    ? { title: me.username + " shared " + one.title,
+        body: "It is on their shelf in your box now.",
+        url: "/?n=recipe:" + one.recipeId, tag: "recipe:" + one.recipeId }
+    : { title: me.username + " shared " + count + " recipes",
+        body: "They are on their shelf in your box now.",
+        url: "/?n=shelf:" + encodeURIComponent(label), tag: "recipes:" + me.cookbookId };
+  msg.kind = "recipe";
+  await pushToCookbooks(env, cbs, null, msg);
 }
 
 /* Hands the work to the runtime so the person who triggered it is not kept
@@ -10434,11 +10584,45 @@ async function handleApi(route, body, env, request, ctx) {
       throw new ApiError(400, "That subscription was not readable.");
     }
     await env.DB.prepare(
-      "INSERT INTO push_subs (endpoint, username_lc, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?) " +
+      "INSERT INTO push_subs (endpoint, username_lc, p256dh, auth, created_at, kinds) VALUES (?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT(endpoint) DO UPDATE SET username_lc = excluded.username_lc, " +
       "p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at"
-    ).bind(endpoint, who.usernameLc, p256dh, auth, new Date().toISOString()).run();
-    return jsonResponse({ ok: true, subscribed: true });
+    ).bind(endpoint, who.usernameLc, p256dh, auth, new Date().toISOString(),
+      JSON.stringify(PUSH_KINDS)).run();
+    /* Note what the conflict branch leaves alone: a device signing itself up
+       again keeps the switches it had set. */
+    return jsonResponse({ ok: true, subscribed: true, kinds: await kindsFor(env, endpoint, who.usernameLc) });
+  }
+
+  /* What this device is signed up for, if anything. Asked when the settings
+     panel opens, because permission and subscription can both be changed
+     from outside the app. */
+  if (route === "push/status") {
+    const who = await requireAuth(env, body);
+    const endpoint = cleanString(body.endpoint, 800);
+    const row = endpoint ? await env.DB.prepare(
+      "SELECT kinds FROM push_subs WHERE endpoint = ? AND username_lc = ?"
+    ).bind(endpoint, who.usernameLc).first() : null;
+    return jsonResponse({
+      ok: true, subscribed: !!row,
+      kinds: row ? readKinds(row.kinds) : PUSH_KINDS.slice()
+    });
+  }
+
+  /* Which of the six this device wants. Held against the endpoint rather
+     than the account, so a phone and a laptop can want different things. */
+  if (route === "push/prefs") {
+    const who = await requireAuth(env, body);
+    const endpoint = cleanString(body.endpoint, 800);
+    if (!endpoint) throw new ApiError(400, "That subscription was not readable.");
+    const kinds = cleanKinds(body.kinds);
+    const res = await env.DB.prepare(
+      "UPDATE push_subs SET kinds = ? WHERE endpoint = ? AND username_lc = ?"
+    ).bind(JSON.stringify(kinds), endpoint, who.usernameLc).run();
+    if (!res.meta || res.meta.changes === 0) {
+      throw new ApiError(404, "This device is not signed up for notifications.");
+    }
+    return jsonResponse({ ok: true, kinds });
   }
 
   /* Turning it off again. Only ever removes this device's own row, and says
@@ -11040,7 +11224,7 @@ async function handleApi(route, body, env, request, ctx) {
         title: "You are invited",
         body: me.username + " has asked you to " + (seat.meal.title || "a meal") +
           (seat.meal.on_date ? " on " + seat.meal.on_date : "") + ".",
-        url: "/?n=meal:" + mealId, tag: "meal:" + mealId
+        url: "/?n=meal:" + mealId, tag: "meal:" + mealId, kind: "mealAsk"
       });
     });
     return jsonResponse({ mealId, invited: guests.length });
@@ -11090,7 +11274,7 @@ async function handleApi(route, body, env, request, ctx) {
           title: me.username + " is coming",
           body: "They have accepted " + (seat.meal.title || "your meal") +
             (seat.meal.on_date ? " on " + seat.meal.on_date : "") + ".",
-          url: "/?n=meal:" + mealId, tag: "meal:" + mealId
+          url: "/?n=meal:" + mealId, tag: "meal:" + mealId, kind: "mealYes"
         });
       });
     }
@@ -11468,7 +11652,7 @@ async function handleApi(route, body, env, request, ctx) {
 
     if (body.recipeId) {
       const owned = await env.DB.prepare(
-        "SELECT recipe_id, updated_at, updated_by, locked_by, locked_at FROM recipes WHERE recipe_id = ? AND cookbook_id = ?"
+        "SELECT recipe_id, visibility, created_at, updated_at, updated_by, locked_by, locked_at FROM recipes WHERE recipe_id = ? AND cookbook_id = ?"
       ).bind(String(body.recipeId), me.cookbookId).first();
       if (!owned) throw new ApiError(403, "You can only edit recipes in your own cookbook.");
 
@@ -11495,6 +11679,12 @@ async function handleApi(route, body, env, request, ctx) {
         "locked_by = NULL, locked_at = NULL WHERE recipe_id = ?"
       ).bind(text, title, description, tags, ingNames, visibility, now, me.username, String(body.recipeId)).run();
       await applyVisibilityReach(env, String(body.recipeId), visibility);
+      if (visibility === "friends" && owned.visibility !== "friends") {
+        pushLater(ctx, function () {
+          return announceRecipes(env, me, owned.created_at,
+            { recipeId: String(body.recipeId), title: title }, 1);
+        });
+      }
       return jsonResponse({ recipeId: String(body.recipeId), updatedAt: now });
     }
 
@@ -11504,6 +11694,11 @@ async function handleApi(route, body, env, request, ctx) {
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, visibility, title,
       description, tags, ingNames, text, now, now, me.username).run();
+    if (visibility === "friends") {
+      pushLater(ctx, function () {
+        return announceRecipes(env, me, now, { recipeId: recipeId, title: title }, 1);
+      });
+    }
     return jsonResponse({ recipeId, updatedAt: now });
   }
 
@@ -11596,10 +11791,12 @@ async function handleApi(route, body, env, request, ctx) {
     const now = new Date().toISOString();
     const statements = [];
     let count = 0;
+    let firstImported = null;
     for (const item of incoming) {
       const { title, text, description, tags, ingNames } =
         validateRecipeData(item && item.data ? item.data : item && item.body);
       const recipeId = newRecipeId();
+      if (!firstImported) firstImported = { recipeId: recipeId, title: title };
       statements.push(env.DB.prepare(
         "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, description, tags, ing_names, data, created_at, updated_at, updated_by) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -11630,6 +11827,11 @@ async function handleApi(route, body, env, request, ctx) {
       }
     }
     await env.DB.batch(statements);
+    if (visibility === "friends" && count) {
+      pushLater(ctx, function () {
+        return announceRecipes(env, me, now, firstImported, count);
+      });
+    }
     return jsonResponse({ count });
   }
 
@@ -11638,11 +11840,23 @@ async function handleApi(route, body, env, request, ctx) {
     const visibility = VISIBILITIES.indexOf(body.visibility) >= 0 ? body.visibility : null;
     if (!visibility) throw new ApiError(400, "Choose private, selective or shared with friends.");
     const recipeId = String(body.recipeId || "");
+    const before = await env.DB.prepare(
+      "SELECT visibility, title, created_at FROM recipes WHERE recipe_id = ? AND cookbook_id = ?"
+    ).bind(recipeId, me.cookbookId).first();
     const res = await env.DB.prepare(
       "UPDATE recipes SET visibility = ?, updated_at = ?, updated_by = ? WHERE recipe_id = ? AND cookbook_id = ?"
     ).bind(visibility, new Date().toISOString(), me.username, recipeId, me.cookbookId).run();
     if (!res.meta || res.meta.changes === 0) throw new ApiError(403, "You can only change recipes in your own cookbook.");
     await applyVisibilityReach(env, recipeId, visibility);
+    /* Opening an old recipe up is judged on when it was written, not on when
+       the switch was thrown, so a tidy-up of the back catalogue does not
+       announce itself to anyone who was already there for it. */
+    if (visibility === "friends" && before && before.visibility !== "friends") {
+      pushLater(ctx, function () {
+        return announceRecipes(env, me, before.created_at,
+          { recipeId: recipeId, title: before.title || "a recipe" }, 1);
+      });
+    }
     return jsonResponse({ ok: true, visibility });
   }
 
@@ -11838,7 +12052,7 @@ async function handleApi(route, body, env, request, ctx) {
         title: me.username + " cooked " + title,
         body: cleanString(body.comment, 160) || "Logged in the cook log.",
         url: "/?n=cook:" + found.row.recipe_id,
-        tag: "cook:" + found.row.recipe_id
+        tag: "cook:" + found.row.recipe_id, kind: "cook"
       });
     });
     return jsonResponse({ ok: true });
@@ -11893,7 +12107,7 @@ async function handleApi(route, body, env, request, ctx) {
           return pushToCookbooks(env, [them.cookbook_id], null, {
             title: "Cookbooks linked",
             body: me.username + " accepted your request. Their shared recipes are in your box now.",
-            url: "/?n=friends", tag: "friend:" + me.cookbookId
+            url: "/?n=friends", tag: "friend:" + me.cookbookId, kind: "friendYes"
           });
         });
         return jsonResponse({ ok: true, accepted: true, username: them.username, members: theirMembers });
@@ -11918,7 +12132,7 @@ async function handleApi(route, body, env, request, ctx) {
       return pushToCookbooks(env, [them.cookbook_id], null, {
         title: "Friend request",
         body: me.username + " would like to link cookbooks with you.",
-        url: "/?n=friends", tag: "friend:" + me.cookbookId
+        url: "/?n=friends", tag: "friend:" + me.cookbookId, kind: "friendAsk"
       });
     });
     return jsonResponse({ ok: true, accepted: false, username: them.username, members: theirMembers });
@@ -11942,7 +12156,7 @@ async function handleApi(route, body, env, request, ctx) {
         return pushToCookbooks(env, [them.cookbook_id], null, {
           title: "Cookbooks linked",
           body: me.username + " accepted your request. Their shared recipes are in your box now.",
-          url: "/?n=friends", tag: "friend:" + me.cookbookId
+          url: "/?n=friends", tag: "friend:" + me.cookbookId, kind: "friendYes"
         });
       });
     }

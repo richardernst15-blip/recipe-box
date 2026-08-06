@@ -1521,6 +1521,10 @@ const state = {
   cookFeed: [],
   /* Which recipe bodies are in flight, so a second tap does not ask twice. */
   bodyPending: {},
+  /* Notifications on this device. status is one of: unknown, unsupported,
+     install (iOS wants the app on the Home Screen first), off, on, denied,
+     unavailable (no keys configured on the server). */
+  push: { status: "unknown", key: "", busy: false },
   mates: [],
   friends: [],
   incoming: [],
@@ -2112,9 +2116,13 @@ function readIntentFromUrl() {
   let intent = null;
   try {
     const q = new URLSearchParams(window.location.search || "");
-    const r = q.get("r"), f = q.get("f");
+    const r = q.get("r"), f = q.get("f"), n = q.get("n");
     if (r) intent = { type: "recipe", recipeId: String(r).slice(0, 64) };
     else if (f) intent = { type: "friend", name: String(f).slice(0, 40) };
+    /* Where a tapped notification wants to go. Not a scanned code, so it is
+       never stashed for later - by the time there is a session to replay it
+       against, it is not news any more. */
+    else if (n) intent = { type: "push", target: String(n).slice(0, 80) };
   } catch (e) { return null; }
   if (intent && window.history && window.history.replaceState) {
     try { window.history.replaceState({}, "", window.location.pathname); } catch (e) {}
@@ -2939,6 +2947,123 @@ function allNotifications() {
 }
 function unreadNotifications() {
   return allNotifications().filter(function (n) { return !n.read; });
+}
+
+/* ---- notifications that arrive with the app shut ----------------------- */
+/* Apple only does this for an app that has been added to the Home Screen,
+   and only when a person taps to ask for it, so there is nothing automatic
+   here: a button in Settings, and everything else follows from it. */
+function pushSupported() {
+  if (typeof navigator === "undefined" || typeof window === "undefined") return false;
+  return ("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window);
+}
+function onIOS() {
+  if (typeof navigator === "undefined") return false;
+  const ua = String(navigator.userAgent || "");
+  /* An iPad on recent iPadOS calls itself a Mac; the touch test is what
+     tells the two apart. */
+  return /iPad|iPhone|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && typeof document !== "undefined" && ("ontouchend" in document));
+}
+function installedApp() {
+  if (typeof navigator !== "undefined" && navigator.standalone === true) return true;
+  try {
+    return window.matchMedia("(display-mode: standalone)").matches ||
+      window.matchMedia("(display-mode: fullscreen)").matches;
+  } catch (e) { return false; }
+}
+function pushKeyBytes(s) {
+  const t = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = (t.length % 4) ? "====".slice(t.length % 4) : "";
+  const bin = atob(t + pad);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function pushRegistration() {
+  if (!pushSupported()) return null;
+  try { return await navigator.serviceWorker.register("/sw.js", { scope: "/" }); }
+  catch (e) { return null; }
+}
+async function refreshPushState() {
+  const p = state.push;
+  if (!pushSupported()) { p.status = onIOS() ? "install" : "unsupported"; return; }
+  if (onIOS() && !installedApp()) { p.status = "install"; return; }
+  if (!p.key) {
+    try { const d = await API("push/key", {}); p.key = (d && d.key) || ""; } catch (e) { p.key = ""; }
+  }
+  if (!p.key) { p.status = "unavailable"; return; }
+  if (Notification.permission === "denied") { p.status = "denied"; return; }
+  const reg = await pushRegistration();
+  if (!reg) { p.status = "unsupported"; return; }
+  let sub = null;
+  try { sub = await reg.pushManager.getSubscription(); } catch (e) { sub = null; }
+  p.status = sub ? "on" : "off";
+}
+async function enablePush() {
+  const p = state.push;
+  const reg = await pushRegistration();
+  if (!reg) { p.status = "unsupported"; return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") { p.status = (perm === "denied") ? "denied" : "off"; return; }
+  let sub = null;
+  try { sub = await reg.pushManager.getSubscription(); } catch (e) {}
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true, applicationServerKey: pushKeyBytes(p.key)
+    });
+  }
+  const j = sub.toJSON ? sub.toJSON() : { keys: {} };
+  await API("push/subscribe", {
+    endpoint: sub.endpoint,
+    p256dh: (j.keys && j.keys.p256dh) || "",
+    auth: (j.keys && j.keys.auth) || ""
+  });
+  p.status = "on";
+}
+async function disablePush() {
+  const reg = await pushRegistration();
+  let sub = null;
+  if (reg) { try { sub = await reg.pushManager.getSubscription(); } catch (e) {} }
+  if (sub) {
+    /* Told to the server first: the row has to go even if the browser is
+       slow to let go of its end of it. */
+    try { await API("push/unsubscribe", { endpoint: sub.endpoint }); } catch (e) {}
+    try { await sub.unsubscribe(); } catch (e) {}
+  }
+  state.push.status = "off";
+}
+
+/* Where a tapped notification lands. Deliberately addressed by the thing
+   itself rather than by a notification id: the ids are worked out on the
+   device from whatever the last sync held, and the server has no way to
+   guess one that will still match by the time the tap happens. */
+async function openPushTarget(spec) {
+  const s = String(spec || "");
+  const at = s.indexOf(":");
+  const kind = at < 0 ? s : s.slice(0, at);
+  const id = at < 0 ? "" : s.slice(at + 1);
+  if (kind === "friends") { Actions.openFriends(); return; }
+  if (kind === "meal") {
+    if (!mealById(id)) { toast("That meal is no longer there"); renderApp(); return; }
+    state.view = "calendar";
+    state.mealFocus = id;
+    renderApp();
+    scrollToMeal(id);
+    return;
+  }
+  if (kind === "recipe" || kind === "cook") {
+    if (!state.recipes.some(function (r) { return r.recipeId === id; })) {
+      toast("That recipe is no longer there");
+      renderApp();
+      return;
+    }
+    /* A logged cook lands with the log already unfolded, the same as it does
+       from the notifications page. */
+    await Actions.openDetail(id, kind === "cook");
+    return;
+  }
+  renderApp();
 }
 
 function fmtWhen(iso) {
@@ -5428,6 +5553,34 @@ function UrlToRecipeModalHTML() {
       '</div>' : ""));
 }
 
+/* One switch, per device, with the reason underneath whenever it cannot be
+   thrown. Nothing here is per cookbook: a phone is a phone. */
+function PushSettingHTML() {
+  const p = state.push;
+  const line = function (text) { return '<p class="helper-text">' + text + '</p>'; };
+  let inner;
+  if (p.status === "install") {
+    inner = line("On an iPhone or iPad, notifications only work once the app is on your Home Screen. " +
+      "Tap Share, then Add to Home Screen, and open it from there.");
+  } else if (p.status === "denied") {
+    inner = line("Notifications are blocked for this app in your device settings. Turn them back on there first.");
+  } else if (p.status === "unavailable") {
+    inner = line("Notifications are not switched on for this server yet.");
+  } else if (p.status === "unsupported" || p.status === "unknown") {
+    inner = line("This browser cannot send notifications.");
+  } else {
+    const on = p.status === "on";
+    inner = '<button class="btn btn-sm btn-block' + (on ? "" : " btn-primary") + '" ' +
+      (p.busy ? "disabled" : "") + ' onclick="Actions.togglePush()">' +
+      icon("bell", 14) + " " + (p.busy ? "Working…" : (on ? "Turn off on this device" : "Turn on for this device")) +
+      '</button>' +
+      line(on
+        ? "This device is signed up. You will hear about friend requests, meal invitations, replies to your invitations, and cooks logged on your recipes."
+        : "Hear about friend requests, meal invitations, replies to your invitations, and cooks logged on your recipes — without the app open.");
+  }
+  return '<div class="field"><label>Notifications</label>' + inner + '</div>';
+}
+
 function AccountModalHTML() {
   return modalShell("Settings",
     '<div class="field"><label>Email</label>' +
@@ -5443,6 +5596,7 @@ function AccountModalHTML() {
       '<button class="btn btn-sm btn-block" onclick="Actions.saveUsername()">Save name</button>' +
       '<p class="helper-text">This is what friends see on your recipes, ratings and comments. 2-20 characters: letters, numbers, dot, dash or underscore.</p>' +
     '</div>' +
+    PushSettingHTML() +
     (state.mates.length
       ? '<div class="field"><label>In this cookbook with you</label>' +
         state.mates.map(m => '<div class="friend-row"><span style="color:var(--accent)">' + icon("chain", 16) + '</span>' +
@@ -6600,9 +6754,37 @@ Actions.openModal = function(name) {
     state.urlToRecipe = { mode: state._nextImportMode || "", url: "", text: "", prompt: "", generated: false };
     state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = "";
   }
+  /* Permission can be changed outside the app, so the switch is re-read
+     every time the panel is opened rather than trusted from boot. */
+  if (name === "account") {
+    refreshPushState().then(function () {
+      if (state.modal === "account") renderModal();
+    }).catch(function () {});
+  }
   renderModal();
 };
 Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); updateLibraryChrome(); };
+
+/* --- notifications on this device --- */
+Actions.togglePush = async function() {
+  const p = state.push;
+  if (p.busy) return;
+  const turningOn = p.status !== "on";
+  p.busy = true;
+  renderModal();
+  try {
+    if (turningOn) await enablePush(); else await disablePush();
+    if (p.status === "on") toast("Notifications on for this device");
+    else if (p.status === "denied") toast("Your device is blocking notifications");
+    else if (turningOn) toast("Notifications were not turned on");
+    else toast("Notifications off for this device");
+  } catch (e) {
+    toast((e && e.message) || "That did not work");
+    await refreshPushState().catch(function () {});
+  }
+  p.busy = false;
+  renderModal();
+};
 
 /* --- rating --- */
 /* One per cookbook, so this overwrites rather than adds, and 0 clears it.
@@ -8870,14 +9052,19 @@ if (typeof document !== "undefined" && document.addEventListener) {
        waiting behind the sign-in screen. A friend code still has to wait -
        there is no one to send the request from yet. */
     if (scanned && scanned.type === "recipe") { await Actions.beginIntent(scanned); return; }
-    if (scanned) { stashIntent(scanned); state._arrivedByScan = true; }
+    if (scanned && scanned.type !== "push") { stashIntent(scanned); state._arrivedByScan = true; }
     renderApp();
     return;
   }
   await refreshLibrary(true);
   /* A code scanned just now wins over one left over from an abandoned visit. */
   const intent = scanned || takeStashedIntent();
-  if (intent) await Actions.beginIntent(intent);
+  if (intent && intent.type === "push") await openPushTarget(intent.target);
+  else if (intent) await Actions.beginIntent(intent);
+  /* Last, and never in the way: works out whether this device is signed up
+     for notifications so Settings can say so, and quietly re-registers the
+     worker on every start in case it was thrown away. */
+  refreshPushState().catch(function () {});
  } catch (e) {
   /* Boot failing used to mean a white page and nothing else. Say what
      happened, and leave a way back to the front door. */
@@ -9350,6 +9537,14 @@ const LATER_TABLES = [
   "CREATE TABLE IF NOT EXISTS sessions ( token TEXT PRIMARY KEY, username_lc TEXT NOT NULL, " +
     "created_at TEXT NOT NULL, expires_at TEXT NOT NULL )",
   "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username_lc)",
+  /* One row per device that has said yes to notifications. Keyed by the
+     endpoint the browser hands out, because that is the only identifier the
+     push service knows us by; a device that reinstalls gets a new one and the
+     old row is dropped the first time it answers Gone. Held per person rather
+     than per cookbook: two people sharing a cookbook are still two phones. */
+  "CREATE TABLE IF NOT EXISTS push_subs ( endpoint TEXT PRIMARY KEY, username_lc TEXT NOT NULL, " +
+    "p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL )",
+  "CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subs(username_lc)",
   "CREATE TABLE IF NOT EXISTS recipe_marks ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
     "kind TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, " +
     "PRIMARY KEY (cookbook_id, recipe_id, kind) )",
@@ -9899,7 +10094,190 @@ async function resolvePendingPins(env, cbA, cbB) {
    upgraded from the old behaviour may still have wishes sitting in that
    table, and accepting a friend request ought to settle them. */
 
-async function handleApi(route, body, env, request) {
+/* ==================================================== push notifications = */
+/* Web Push done with nothing but WebCrypto, so there is no library to bundle
+   into a file that is pasted into a dashboard: RFC 8292 for the VAPID
+   signature that identifies this server to Apple and Google, RFC 8291 for the
+   aes128gcm envelope that keeps the message unreadable to them. Neither of
+   them ever sees the text.
+
+   Everything here swallows its own errors. A push is a courtesy; it must
+   never be the reason a friend request or a cook log fails to save. */
+const PUSH_TTL = 86400;          /* a day: past that it is no longer news */
+const PUSH_FANOUT = 40;          /* D1 takes about fifty binds in one go */
+
+function b64urlToBytes(s) {
+  const t = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = (t.length % 4) ? "====".slice(t.length % 4) : "";
+  const bin = atob(t + pad);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function bytesToB64url(bytes) {
+  const b = new Uint8Array(bytes);
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function joinBytes(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+async function hmacBytes(keyBytes, data) {
+  const k = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, data));
+}
+
+/* The server's own identity, rebuilt from the two secrets. The public half is
+   stored as the raw 65-byte point the browser wants for applicationServerKey,
+   so the JWK coordinates are cut back out of it rather than kept twice. */
+async function vapidKeys(env) {
+  if (!env || !env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return null;
+  try {
+    const pub = b64urlToBytes(env.VAPID_PUBLIC_KEY);
+    if (pub.length !== 65) return null;
+    const key = await crypto.subtle.importKey("jwk", {
+      kty: "EC", crv: "P-256", d: String(env.VAPID_PRIVATE_KEY),
+      x: bytesToB64url(pub.slice(1, 33)), y: bytesToB64url(pub.slice(33, 65))
+    }, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+    return { key: key, pub: String(env.VAPID_PUBLIC_KEY) };
+  } catch (e) { return null; }
+}
+async function vapidHeader(env, keys, endpoint) {
+  const enc = new TextEncoder();
+  const head = bytesToB64url(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = bytesToB64url(enc.encode(JSON.stringify({
+    aud: new URL(endpoint).origin,
+    exp: Math.floor(Date.now() / 1000) + 43200,
+    sub: env.VAPID_SUBJECT || "mailto:kindredcupboard@gmail.com"
+  })));
+  const signed = head + "." + claims;
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.key, enc.encode(signed));
+  return "vapid t=" + signed + "." + bytesToB64url(new Uint8Array(sig)) + ", k=" + keys.pub;
+}
+
+/* One message, sealed to one device. A throwaway keypair per send agrees a
+   secret with that device's public key; the shared secret and the device's
+   own auth secret are stretched into a content key and a nonce, and the
+   result is a single aes128gcm record with the body laid out in front of it
+   exactly as the spec orders it. */
+async function encryptPush(text, p256dh, authSecretB64) {
+  const enc = new TextEncoder();
+  const uaPub = b64urlToBytes(p256dh);
+  const authSecret = b64urlToBytes(authSecretB64);
+  const eph = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", uaPub, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, eph.privateKey, 256));
+
+  const prkKey = await hmacBytes(authSecret, shared);
+  const ikm = await hmacBytes(prkKey, joinBytes([
+    enc.encode("WebPush: info\u0000"), uaPub, asPub, new Uint8Array([1])
+  ]));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const prk = await hmacBytes(salt, ikm);
+  const cek = (await hmacBytes(prk, joinBytes([
+    enc.encode("Content-Encoding: aes128gcm\u0000"), new Uint8Array([1])
+  ]))).slice(0, 16);
+  const nonce = (await hmacBytes(prk, joinBytes([
+    enc.encode("Content-Encoding: nonce\u0000"), new Uint8Array([1])
+  ]))).slice(0, 12);
+
+  const aes = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
+  /* 0x02 is the last-record marker; there is only ever one record here. */
+  const padded = joinBytes([enc.encode(text), new Uint8Array([2])]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, tagLength: 128 }, aes, padded));
+  return joinBytes([salt, new Uint8Array([0, 0, 16, 0]), new Uint8Array([65]), asPub, ct]);
+}
+
+async function sendOnePush(env, keys, sub, text) {
+  let payload, auth;
+  try {
+    payload = await encryptPush(text, sub.p256dh, sub.auth);
+    auth = await vapidHeader(env, keys, sub.endpoint);
+  } catch (e) { return; }
+  let res;
+  try {
+    res = await fetch(sub.endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": auth,
+        "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream",
+        "TTL": String(PUSH_TTL),
+        "Urgency": "normal"
+      },
+      body: payload
+    });
+  } catch (e) { return; }
+  /* Gone means the browser has thrown the subscription away - an uninstall,
+     a cleared site, permission withdrawn. Stop writing to a dead address. */
+  if (res && (res.status === 404 || res.status === 410)) {
+    try {
+      await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(sub.endpoint).run();
+    } catch (e) {}
+  }
+}
+
+async function pushToUsers(env, usernameLcs, msg) {
+  const names = Array.from(new Set((usernameLcs || []).filter(Boolean)));
+  if (!names.length) return;
+  const keys = await vapidKeys(env);
+  if (!keys) return;                  /* no keys configured: quietly nothing */
+  const text = JSON.stringify(msg);
+  for (let i = 0; i < names.length; i += PUSH_FANOUT) {
+    const slice = names.slice(i, i + PUSH_FANOUT);
+    let rows;
+    try {
+      rows = await env.DB.prepare(
+        "SELECT endpoint, p256dh, auth FROM push_subs WHERE username_lc IN (" +
+        placeholders(slice.length) + ")"
+      ).bind(...slice).all();
+    } catch (e) { return; }
+    for (const sub of (rows && rows.results) || []) await sendOnePush(env, keys, sub, text);
+  }
+}
+
+/* Most things worth announcing happen between cookbooks, but a notification
+   arrives on a person's phone, so the cookbook is opened out into its people
+   first. The one who caused it is left out - nobody needs telling what they
+   just did. */
+async function usersInCookbooks(env, cookbookIds, exceptLc) {
+  const ids = Array.from(new Set((cookbookIds || []).filter(Boolean)));
+  const out = [];
+  for (let i = 0; i < ids.length; i += PUSH_FANOUT) {
+    const slice = ids.slice(i, i + PUSH_FANOUT);
+    const rows = await env.DB.prepare(
+      "SELECT username_lc FROM users WHERE cookbook_id IN (" + placeholders(slice.length) + ")"
+    ).bind(...slice).all();
+    for (const r of (rows && rows.results) || []) {
+      if (r.username_lc !== exceptLc) out.push(r.username_lc);
+    }
+  }
+  return out;
+}
+async function pushToCookbooks(env, cookbookIds, exceptLc, msg) {
+  try {
+    await pushToUsers(env, await usersInCookbooks(env, cookbookIds, exceptLc), msg);
+  } catch (e) {}
+}
+
+/* Hands the work to the runtime so the person who triggered it is not kept
+   waiting on somebody else's phone. Without a context - the test harnesses
+   have none - it simply runs, and its failures stay swallowed. */
+function pushLater(ctx, work) {
+  const p = Promise.resolve().then(work).catch(function () {});
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(p);
+  return p;
+}
+
+async function handleApi(route, body, env, request, ctx) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   await ensureSchema(env);
 
@@ -10034,6 +10412,48 @@ async function handleApi(route, body, env, request) {
   /* ---- sign out ----
      Answers the same way whether or not the token was real, so signing out
      twice is not an error worth showing anybody. */
+  /* ---- notifications on a device ----
+     The public key is public by definition: the browser has to hand it to
+     the push service before it will issue a subscription at all. It is
+     answered without a session so the settings panel can tell whether the
+     feature is switched on at the server before asking anybody for
+     permission. */
+  if (route === "push/key") {
+    return jsonResponse({ key: (env && env.VAPID_PUBLIC_KEY) || "" });
+  }
+
+  /* Saying yes on a device. Keyed by endpoint, so the same phone answering
+     twice replaces its row rather than collecting them, and a phone that
+     moves to another account moves with it. */
+  if (route === "push/subscribe") {
+    const who = await requireAuth(env, body);
+    const endpoint = cleanString(body.endpoint, 800);
+    const p256dh = cleanString(body.p256dh, 200);
+    const auth = cleanString(body.auth, 100);
+    if (!/^https:\/\//.test(endpoint) || !p256dh || !auth) {
+      throw new ApiError(400, "That subscription was not readable.");
+    }
+    await env.DB.prepare(
+      "INSERT INTO push_subs (endpoint, username_lc, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?) " +
+      "ON CONFLICT(endpoint) DO UPDATE SET username_lc = excluded.username_lc, " +
+      "p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at"
+    ).bind(endpoint, who.usernameLc, p256dh, auth, new Date().toISOString()).run();
+    return jsonResponse({ ok: true, subscribed: true });
+  }
+
+  /* Turning it off again. Only ever removes this device's own row, and says
+     the same thing whether there was one or not. */
+  if (route === "push/unsubscribe") {
+    const who = await requireAuth(env, body);
+    const endpoint = cleanString(body.endpoint, 800);
+    if (endpoint) {
+      await env.DB.prepare(
+        "DELETE FROM push_subs WHERE endpoint = ? AND username_lc = ?"
+      ).bind(endpoint, who.usernameLc).run();
+    }
+    return jsonResponse({ ok: true, subscribed: false });
+  }
+
   if (route === "auth/logout") {
     const token = cleanString(body.token, 80);
     if (token) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
@@ -10615,6 +11035,14 @@ async function handleApi(route, body, env, request) {
         "updated_at = excluded.updated_at"
       ).bind(mealId, cb, me.username, now).run();
     }
+    pushLater(ctx, function () {
+      return pushToCookbooks(env, guests, null, {
+        title: "You are invited",
+        body: me.username + " has asked you to " + (seat.meal.title || "a meal") +
+          (seat.meal.on_date ? " on " + seat.meal.on_date : "") + ".",
+        url: "/?n=meal:" + mealId, tag: "meal:" + mealId
+      });
+    });
     return jsonResponse({ mealId, invited: guests.length });
   }
 
@@ -10656,6 +11084,16 @@ async function handleApi(route, body, env, request) {
       "UPDATE meal_guests SET status = ?, responded_by = ?, updated_at = ? " +
       "WHERE meal_id = ? AND cookbook_id = ?"
     ).bind(answer === "accept" ? "accepted" : "declined", me.username, now, mealId, me.cookbookId).run();
+    if (answer === "accept") {
+      pushLater(ctx, function () {
+        return pushToCookbooks(env, [seat.meal.owner_cb], null, {
+          title: me.username + " is coming",
+          body: "They have accepted " + (seat.meal.title || "your meal") +
+            (seat.meal.on_date ? " on " + seat.meal.on_date : "") + ".",
+          url: "/?n=meal:" + mealId, tag: "meal:" + mealId
+        });
+      });
+    }
     return jsonResponse({ mealId, status: answer === "accept" ? "accepted" : "declined" });
   }
 
@@ -11390,6 +11828,19 @@ async function handleApi(route, body, env, request) {
       "VALUES (?, ?, ?, ?, 0, ?, ?, ?)"
     ).bind(newCommentId(), found.row.recipe_id, me.usernameLc, me.username,
       cleanString(body.comment, MAX_COMMENT_CHARS), cookedOn, now).run();
+    /* The cookbook that owns the recipe hears about it, minus whoever just
+       cooked it. This is the same rule the notifications page has always
+       used, only now it reaches a phone that is not open. */
+    pushLater(ctx, function () {
+      let title = "a recipe";
+      try { title = JSON.parse(found.row.data).title || title; } catch (e) {}
+      return pushToCookbooks(env, [found.row.cookbook_id], me.usernameLc, {
+        title: me.username + " cooked " + title,
+        body: cleanString(body.comment, 160) || "Logged in the cook log.",
+        url: "/?n=cook:" + found.row.recipe_id,
+        tag: "cook:" + found.row.recipe_id
+      });
+    });
     return jsonResponse({ ok: true });
   }
 
@@ -11438,6 +11889,13 @@ async function handleApi(route, body, env, request) {
           "WHERE requester_cb = ? AND addressee_cb = ?"
         ).bind(me.username, now, them.cookbook_id, me.cookbookId).run();
         await resolvePendingPins(env, me.cookbookId, them.cookbook_id);
+        pushLater(ctx, function () {
+          return pushToCookbooks(env, [them.cookbook_id], null, {
+            title: "Cookbooks linked",
+            body: me.username + " accepted your request. Their shared recipes are in your box now.",
+            url: "/?n=friends", tag: "friend:" + me.cookbookId
+          });
+        });
         return jsonResponse({ ok: true, accepted: true, username: them.username, members: theirMembers });
       }
       if (row.status === "declined" && row.requester_cb === me.cookbookId) {
@@ -11456,6 +11914,13 @@ async function handleApi(route, body, env, request) {
       "INSERT INTO friendships (requester_cb, addressee_cb, status, requested_by, created_at, updated_at) " +
       "VALUES (?, ?, 'pending', ?, ?, ?)"
     ).bind(me.cookbookId, them.cookbook_id, me.username, now, now).run();
+    pushLater(ctx, function () {
+      return pushToCookbooks(env, [them.cookbook_id], null, {
+        title: "Friend request",
+        body: me.username + " would like to link cookbooks with you.",
+        url: "/?n=friends", tag: "friend:" + me.cookbookId
+      });
+    });
     return jsonResponse({ ok: true, accepted: false, username: them.username, members: theirMembers });
   }
 
@@ -11470,7 +11935,17 @@ async function handleApi(route, body, env, request) {
     ).bind(action, me.username, new Date().toISOString(), them.cookbook_id, me.cookbookId).run();
     if (!res.meta || res.meta.changes === 0) throw new ApiError(404, "That request is no longer waiting.");
     /* Anything either side scanned while waiting can be settled now. */
-    if (action === "accepted") await resolvePendingPins(env, me.cookbookId, them.cookbook_id);
+    if (action === "accepted") {
+      await resolvePendingPins(env, me.cookbookId, them.cookbook_id);
+      /* Only the yes travels. A no is a quiet no. */
+      pushLater(ctx, function () {
+        return pushToCookbooks(env, [them.cookbook_id], null, {
+          title: "Cookbooks linked",
+          body: me.username + " accepted your request. Their shared recipes are in your box now.",
+          url: "/?n=friends", tag: "friend:" + me.cookbookId
+        });
+      });
+    }
     const map = await membersOf(env, [them.cookbook_id]);
     return jsonResponse({ ok: true, status: action, members: map[them.cookbook_id] || [them.username] });
   }
@@ -11527,11 +12002,64 @@ const MANIFEST = JSON.stringify({
   icons: [{ src: "/icon.png", sizes: "192x192", type: "image/png", purpose: "any maskable" }]
 });
 
+/* The whole of the service worker. It exists only to receive pushes and to
+   open the right page when one is tapped - there is deliberately no fetch
+   handler and no cache, because a worker that serves the app from a cache is
+   a worker that can hand somebody last week's app and no way to tell. */
+const SW_JS = `/* Kindred Cupboard - notifications only. */
+self.addEventListener("install", function () { self.skipWaiting(); });
+self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });
+
+self.addEventListener("push", function (event) {
+  var msg = {};
+  try { msg = event.data ? event.data.json() : {}; } catch (err) { msg = {}; }
+  /* iOS withdraws permission from a worker that takes a push and shows
+     nothing, so there is always a notification, even for an empty one. */
+  event.waitUntil(self.registration.showNotification(msg.title || "Kindred Cupboard", {
+    body: msg.body || "",
+    icon: "/icon.png",
+    badge: "/icon.png",
+    tag: msg.tag || "kindred",
+    renotify: true,
+    data: { url: msg.url || "/" }
+  }));
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    .then(function (list) {
+      /* An app already open is steered rather than opened a second time. */
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        if (c.url && c.url.indexOf(self.registration.scope) === 0) {
+          if (c.navigate) return c.navigate(url).then(function (w) { return (w || c).focus(); });
+          if (c.focus) return c.focus();
+        }
+      }
+      return self.clients.openWindow ? self.clients.openWindow(url) : undefined;
+    }));
+});
+`;
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/icon.png") return iconResponse();
+
+    /* Served from the root so its scope covers the whole app. Never cached
+       for long: a stale worker is how push quietly stops arriving. */
+    if (url.pathname === "/sw.js") {
+      return new Response(SW_JS, {
+        headers: {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Service-Worker-Allowed": "/"
+        }
+      });
+    }
 
     if (url.pathname === "/manifest.webmanifest") {
       return new Response(MANIFEST, {
@@ -11550,7 +12078,7 @@ export default {
       try { body = await request.json(); }
       catch (e) { return jsonResponse({ error: "That request was not readable." }, 400); }
       try {
-        return await handleApi(url.pathname.slice(5), body || {}, env, request);
+        return await handleApi(url.pathname.slice(5), body || {}, env, request, ctx);
       } catch (e) {
         if (e instanceof ApiError) return jsonResponse({ error: e.message, code: e.code, detail: e.detail }, e.status);
         return jsonResponse({ error: "Something went wrong on the server." }, 500);

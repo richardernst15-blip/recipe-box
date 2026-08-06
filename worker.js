@@ -291,8 +291,30 @@ html.doc-scroll #app{ overflow-x:clip; }
 .search-wrap input{ width:100%; padding:12px 14px 12px 40px; border-radius:10px; border:1px solid var(--border); background:#fff; font-size:15px; }
 .search-wrap input:focus{ outline:2px solid var(--accent); outline-offset:-1px; }
 .search-wrap .icon{ position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-muted); pointer-events:none; }
-.filter-row{ display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-.filter-row select{ flex:1; min-width:148px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#fff; font-size:13.5px; color:var(--ink); }
+/* Two even halves, always. Letting the household button size itself to its
+   label left the sort menu with a different width on every screen. */
+.filter-row{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px; }
+.filter-row > *{ min-width:0; }
+.filter-row select{ width:100%; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#fff; font-size:13.5px; color:var(--ink); }
+
+/* Search, sort, household and Inspiration are four controls that do the same
+   kind of job, so they are one grid of four identical cells rather than two
+   rows that size themselves differently. The height is fixed here rather
+   than left to each control's own padding, because a select and a button
+   never agree on it. */
+.lib-grid{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px; }
+.lib-grid > *{ min-width:0; width:100%; height:44px; box-sizing:border-box; }
+.lib-grid .search-field{ position:relative; display:flex; align-items:center; }
+.lib-grid .search-field input{ width:100%; height:44px; box-sizing:border-box;
+  padding:0 38px 0 38px; border-radius:10px; border:1px solid var(--border);
+  background:#fff; font-size:15px; }
+.lib-grid .search-field input:focus{ outline:2px solid var(--accent); outline-offset:-1px; }
+.lib-grid .icon{ position:absolute; left:11px; top:50%; transform:translateY(-50%);
+  color:var(--ink-muted); pointer-events:none; display:flex; }
+.lib-grid select{ padding:0 8px; border-radius:10px; border:1px solid var(--border);
+  background:#fff; font-size:13.5px; color:var(--ink); }
+.lib-grid .btn{ display:flex; align-items:center; justify-content:center; gap:5px;
+  padding:0 10px; border-radius:10px; font-size:13.5px; overflow:hidden; }
 
 /* chips */
 .chips{ display:flex; flex-wrap:wrap; align-content:flex-start; gap:8px; margin-bottom:16px; max-height:112px; overflow-y:auto; padding-right:2px; }
@@ -324,6 +346,11 @@ html.doc-scroll #app{ overflow-x:clip; }
 .owner-badge{ font-size:11px; color:var(--accent); background:#fbf0ef; border-radius:999px; padding:3px 9px; display:inline-block; }
 .card-foot{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:auto; padding-top:4px; }
 .cooked-count{ font-size:12.5px; color:var(--ink-muted); }
+/* Sits under the credit line on your own recipes only. Muted on purpose:
+   it is news, not a score. */
+.mark-interest{ display:flex; align-items:center; gap:6px; margin:-4px 0 10px;
+  font-size:12.5px; color:var(--ink-muted); }
+.mark-interest svg{ flex-shrink:0; color:var(--accent); }
 
 .stars{ display:inline-flex; align-items:center; gap:4px; font-size:12.5px; color:var(--ink-muted); }
 .stars svg{ width:14px; height:14px; }
@@ -374,10 +401,19 @@ html.doc-scroll #app{ overflow-x:clip; }
 .panel{ flex:1; min-width:250px; background:#fff; border:1px solid var(--border-light); border-radius:13px; padding:15px 16px; }
 .panel-label{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-muted); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
 
-.scale-row{ display:flex; flex-wrap:wrap; gap:7px; align-items:center; }
-.scale-btn{ padding:7px 12px; border-radius:8px; border:1px solid var(--border); background:#fff; font-size:14px; cursor:pointer; }
+.scale-row{ display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+.scale-btn{ padding:7px 9px; border-radius:8px; border:1px solid var(--border); background:#fff; font-size:14px; cursor:pointer; white-space:nowrap; }
 .scale-btn.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
-.scale-custom-input{ width:68px; padding:7px 8px; border-radius:8px; border:1px solid var(--border); font-size:14px; }
+/* The chip and the field are the same object, so the box must not grow when
+   it becomes editable. The input is sized to two digits and the x is static
+   text beside it, which is what keeps the label reading "6x" as you type. */
+.scale-custom{ display:inline-flex; align-items:center; gap:1px; padding-left:8px; padding-right:8px; }
+.scale-custom-field{ width:2.4em; min-width:0; padding:0; border:0; background:none;
+  font:inherit; color:inherit; text-align:right; -moz-appearance:textfield; }
+.scale-custom-field:focus{ outline:none; }
+.scale-custom-field::placeholder{ color:inherit; opacity:.6; }
+.scale-custom.active .scale-custom-field{ color:#fff; }
+.scale-x{ opacity:.85; }
 .makes-line{ font-size:13.5px; color:var(--ink-muted); margin:10px 0 0; }
 
 .macro-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; text-align:center; }
@@ -434,6 +470,10 @@ html.doc-scroll #app{ overflow-x:clip; }
   width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--border); font-size:14.5px; background:#fff;
 }
 .field textarea{ resize:vertical; }
+/* Safari sizes a date input to its own content unless it is told otherwise,
+   which left Date cooked wider than the comment box below it. */
+.field input[type=date]{ -webkit-appearance:none; appearance:none; display:block;
+  min-width:0; max-width:100%; height:40px; }
 .two-col{ display:flex; gap:12px; }
 .two-col .field{ flex:1; }
 .seg{ display:flex; gap:8px; }
@@ -517,10 +557,18 @@ html.doc-scroll #app{ overflow-x:clip; }
    the notch and the home indicator instead of tucking underneath them. */
 .modal-overlay{ position:fixed; top:var(--vv-top,0px); left:var(--vv-left,0px);
   width:var(--vv-width,100%); height:var(--vv-height,100%);
-  background:rgba(34,31,28,.5); display:flex;
+  background:none; display:flex;
   align-items:center; justify-content:center; z-index:80; overscroll-behavior:contain;
   padding:calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom)); }
-.modal-box{ background:#fff; width:100%; max-width:560px; max-height:100%; overflow-y:auto;
+/* The grey is a separate layer pinned to the whole window rather than the
+   background of the box that centres the card. Sizing the two together meant
+   that the moment the keyboard shrank the visual viewport, the overlay
+   shrank with it and the page's cream showed through underneath - a bar
+   along the foot of the installed app that appeared with the keyboard and
+   went again with it. Painted first, so the card still sits on top. */
+.modal-overlay::before{ content:""; position:fixed; top:0; left:0; right:0; bottom:0;
+  background:rgba(34,31,28,.5); }
+.modal-box{ position:relative; background:#fff; width:100%; max-width:560px; max-height:100%; overflow-y:auto;
   overscroll-behavior:contain; border-radius:16px; padding:22px; }
 .modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
 .modal-head h3{ margin:0; font-size:19px; }
@@ -673,15 +721,19 @@ body.tabs-down .tabbar{ transform:translateY(calc(100% + 1px)); }
    phone, which put the control that abandons the pick a long way from the
    pick it abandons. The name is the only part that gives, so the numbers and
    the two buttons stay where the thumb last found them. */
-.meal-dish-pick{ display:flex; align-items:center; gap:6px; flex-wrap:nowrap;
+.meal-dish-pick{ display:grid; grid-template-columns:minmax(0,1fr) auto auto;
+  grid-template-rows:auto auto; align-items:center; gap:6px 8px;
   background:var(--meal-soft); border:1px solid var(--meal-line); border-radius:10px;
   padding:9px 10px; margin-top:6px; font-size:13.5px; }
-.meal-dish-pick .name{ flex:1; min-width:0; font-weight:600; color:var(--meal-dark);
+.meal-dish-pick .name{ grid-column:1; grid-row:1; min-width:0; font-weight:600; color:var(--meal-dark);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.meal-dish-pick .qty{ grid-column:1; grid-row:2; display:flex; align-items:center; gap:6px; min-width:0; }
 .meal-dish-pick input{ width:58px; flex-shrink:0; text-align:center; padding-left:4px; padding-right:4px; }
-.meal-dish-pick .unit{ font-size:12px; color:var(--ink-muted); flex-shrink:0;
-  max-width:74px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.meal-dish-pick .btn{ flex-shrink:0; padding-left:9px; padding-right:9px; }
+.meal-dish-pick .unit{ font-size:12px; color:var(--ink-muted); flex-shrink:1; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.meal-dish-pick .btn{ grid-column:2; grid-row:1 / span 2; align-self:center;
+  flex-shrink:0; padding-left:9px; padding-right:9px; }
+.meal-dish-pick .icon-btn{ grid-column:3; grid-row:1 / span 2; align-self:center; }
 .meal-dup{ background:#fdf6e6; border:1px solid #e8d5a0; border-radius:9px; padding:8px 10px;
   font-size:12.5px; color:#7a5a12; margin-top:6px; }
 .sched-banner{ display:flex; align-items:center; gap:10px; flex-wrap:wrap;
@@ -900,7 +952,7 @@ body.tabs-down .toast{ bottom:calc(16px + var(--tab-pad-b,20px)); }
 .search-wrap input { flex:1; }
 /* The field is its own positioning context so the clear button can sit
    inside the input's right edge rather than the row's. */
-.search-field{ position:relative; flex:1; display:flex; align-items:center; }
+.search-field{ position:relative; flex:1; min-width:0; display:flex; align-items:center; }
 .search-field input{ padding-right:40px; }
 .search-clear{ position:absolute; right:7px; top:50%; transform:translateY(-50%);
   display:none; align-items:center; justify-content:center; width:26px; height:26px; padding:0;
@@ -908,6 +960,7 @@ body.tabs-down .toast{ bottom:calc(16px + var(--tab-pad-b,20px)); }
 .search-clear.on{ display:flex; }
 .search-clear:active{ background:var(--border); }
 .search-filter { flex-shrink:0; display:flex; align-items:center; gap:5px; }
+.search-filter .flabel { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .search-filter.on { background:var(--accent); color:#fff; border-color:var(--accent); }
 .fcount { display:inline-block; flex-shrink:0; min-width:17px; padding:0 5px; border-radius:9px; background:var(--accent);
   color:#fff; font-size:11px; line-height:17px; text-align:center; margin-left:6px; }
@@ -915,6 +968,12 @@ body.tabs-down .toast{ bottom:calc(16px + var(--tab-pad-b,20px)); }
 .fcount.zero { visibility:hidden; }
 .search-filter.on .fcount { background:#fff; color:var(--accent); }
 .chip-clear { border-style:dashed; }
+
+/* One tap target per source, stacked, so the list reads as a menu rather
+   than as a row of buttons that happens to wrap. */
+.import-menu { display:flex; flex-direction:column; gap:8px; }
+.import-choice { display:flex; align-items:center; gap:10px; text-align:left; padding:13px 14px; font-size:14.5px; }
+.import-back { margin-bottom:10px; }
 
 /* A code and the thing it says, side by side. Stacks on a narrow screen so
    the code never shrinks below scanning size. */
@@ -1292,6 +1351,14 @@ function scaledVal(value, factor) {
   if (value == null || value === "") return null;
   return Number(value) * factor;
 }
+/* A multiplier the way it would be written by hand: 6 rather than 6.00, and
+   1.5 rather than 1.5000000000000002. Two decimals is as fine as the chip
+   ever needs to be. */
+function trimNumber(n) {
+  const v = Number(n);
+  if (isNaN(v)) return "";
+  return String(Math.round(v * 100) / 100);
+}
 
 /* A recipe "body" is the portable part: no ids, no owner, no comments. */
 function normalizeBody(r) {
@@ -1396,6 +1463,13 @@ const IMPORT_SOURCES = {
       "know. If part of the photo is unreadable, leave that field empty rather than inventing it.",
     tail: "Recipe to convert: the attached photo."
   },
+  /* Not an AI prompt at all - it reads recipes this app exported. It sits in
+     the same menu because "where is this recipe coming from" is the same
+     question either way. */
+  json: {
+    label: "From JSON", icon: "upload",
+    intro: "", tail: ""
+  },
   chat: {
     label: "From AI Chat", icon: "chat",
     intro: "Use the recipe we have worked out in this conversation. Do not fetch anything and do not " +
@@ -1462,6 +1536,9 @@ const state = {
   friendsTab: "friends",
   myHousehold: "",
   marks: { pin: [], star: [], later: [] },
+  /* recipeId -> how many other cookbooks pinned, favorited or saved it. Only
+     ever populated for recipes of our own, and never says which cookbooks. */
+  markCounts: {},
   shares: {},
   /* Which friends are ticked in the visibility sheet, while it is open. */
   visDraft: [],
@@ -1486,6 +1563,11 @@ const state = {
   _shownKey: null,
   scale: 1,
   customScaleOpen: false,
+  /* The last multiplier typed into the chip, kept so coming back to it starts
+     from what you had rather than from blank. _scaleEdit is only whether the
+     chip is currently a field. */
+  customScale: "",
+  _scaleEdit: false,
   editDraft: null,
   editIsNew: false,
   editBaseUpdatedAt: null,
@@ -1517,7 +1599,7 @@ const state = {
   importErrors: [],
   importVisibility: "",
   importFileName: null,
-  urlToRecipe: { mode: "url", url: "", text: "", prompt: "", generated: false },
+  urlToRecipe: { mode: "", url: "", text: "", prompt: "", generated: false },
   busy: false,
   _tagList: [],
   _showAllLogs: false,
@@ -1573,6 +1655,8 @@ const state = {
   mealFriendSearch: "",
   mealDishSearch: {},
   mealDishPick: {},
+  /* The recipe on its way to a community meal, while that sheet is open. */
+  mealAdd: null,
   mealPastOpen: {}
 };
 
@@ -2167,6 +2251,7 @@ function applyLibrary(data) {
   });
   state.myHousehold = (data.me && data.me.household) || state.session.username;
   state.marks = data.marks || { pin: [], star: [], later: [] };
+  state.markCounts = data.markCounts || {};
   state.shares = data.shares || {};
   state.mates = data.mates || [];
   state.friends = data.friends || [];
@@ -2876,6 +2961,22 @@ function fmtWhen(iso) {
 function friendLabels() { return state.friends.map(f => f.label); }
 function isMarked(kind, id) { return (state.marks[kind] || []).indexOf(id) >= 0; }
 
+/* What other cookbooks have done with a recipe of yours. A tally and nothing
+   else - naming them would turn a quiet compliment into a thing that has to
+   be acknowledged, and the counts are per cookbook rather than per person
+   because that is how a mark is stored. */
+function MarkInterestHTML(r) {
+  if (!r || !r.ours) return "";
+  const c = state.markCounts[r.recipeId] || {};
+  const parts = [];
+  if (c.pin) parts.push(c.pin + " pinned it");
+  if (c.star) parts.push(c.star + " favorited it");
+  if (c.later) parts.push(c.later + " saved it for later");
+  if (!parts.length) return "";
+  return '<div class="mark-interest" title="Counted by cookbook. Which ones is not shown.">' +
+    icon("users", 13) + '<span>' + esc(parts.join(" · ")) + '</span></div>';
+}
+
 /* Star, save for later, pin. Icon only on a card, worded in full on the
    recipe itself. Pinning your own recipe is meaningless, so it is hidden. */
 const MARK_DEFS = [
@@ -2964,6 +3065,23 @@ function ScheduleMarkHTML(r, full) {
     icon("calGrid", full ? 15 : 14) + (full ? '<span>Schedule this recipe</span>' : "") +
   '</button>';
 }
+/* Meals you are actually going to and could still bring something to: one
+   you are hosting, or one you have said yes to. An invitation you have not
+   answered is not a table you can put a dish on. */
+function mealsIcanBringTo() {
+  return state.meals.filter(function (m) {
+    return !isMealPast(m) && (m.myStatus === "owner" || m.myStatus === "accepted");
+  }).sort(function (a, b) { return (a.date + a.time).localeCompare(b.date + b.time); });
+}
+/* Sits beside Schedule because it answers the same question - when is this
+   being cooked - and only appears when there is a meal to answer it with. */
+function MealMarkHTML(r, full) {
+  if (!mealsIcanBringTo().length) return "";
+  return '<button class="mark mark-cal" title="Add to a community meal" ' +
+    'onclick="event.stopPropagation(); Actions.openMealAdd(\\'' + r.recipeId + '\\')">' +
+    icon("users", full ? 15 : 14) + (full ? '<span>Add to Community Meal</span>' : "") +
+  '</button>';
+}
 
 function tagSort(a, b) {
   const aUpper = /^[A-Z]/.test(a), bUpper = /^[A-Z]/.test(b);
@@ -3030,9 +3148,12 @@ function sortRecipes(list) {
   if (s === "az") arr.sort((a, b) => a.title.localeCompare(b.title));
   else if (s === "za") arr.sort((a, b) => b.title.localeCompare(a.title));
   else if (s === "oldest") arr.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  /* Most cooked means the cook log, not the number of people who have rated
+     it. Reading the rating count here put a dish cooked twice below one
+     cooked once, because ratings are one per cookbook and cooks are not. */
   else if (s === "cooked") arr.sort((a, b) => {
     const A = statsFor(a.recipeId), B = statsFor(b.recipeId);
-    return (B.count - A.count) || ((B.avg || 0) - (A.avg || 0)) || a.title.localeCompare(b.title);
+    return (B.cooks - A.cooks) || ((B.avg || 0) - (A.avg || 0)) || a.title.localeCompare(b.title);
   });
   else if (s === "rated") arr.sort((a, b) => {
     const A = statsFor(a.recipeId), B = statsFor(b.recipeId);
@@ -3123,25 +3244,27 @@ function LibraryViewHTML() {
           '</div>' +
         '</div>' +
       '</div>' +
-      '<div class="search-wrap">' +
+      '<div class="lib-grid">' +
         '<div class="search-field"><span class="icon">' + icon("search", 18) + '</span>' +
-          '<input id="search-input" type="text" placeholder="Search recipes, ingredients, tags..." value="' + esc(state.search) + '" oninput="Actions.onSearchInput(this.value)" />' +
+          '<input id="search-input" type="text" placeholder="Search" value="' + esc(state.search) + '" oninput="Actions.onSearchInput(this.value)" />' +
           '<button id="search-clear" class="search-clear' + (state.search ? " on" : "") + '" title="Clear search" onclick="Actions.clearSearch()">' + icon("x", 15) + '</button>' +
         '</div>' +
-        '<button id="filter-btn" class="btn search-filter' + (state.activeTags.length ? " on" : "") + '" onclick="Actions.openFilters()">' +
-          FilterButtonInnerHTML() +
-        '</button></div>' +
-      '<div class="filter-row">' +
+        '<select onchange="Actions.setSort(this.value)">' + sortOptions + '</select>' +
         '<button class="btn owner-pick" onclick="Actions.openModal(\\'owner\\')">' +
           icon("users", 14) + ' ' + esc(ownerFilterLabel()) + '</button>' +
-        '<select onchange="Actions.setSort(this.value)">' + sortOptions + '</select>' +
+        '<button id="filter-btn" class="' + FILTER_BTN_CLASS() + '" onclick="Actions.openFilters()">' +
+          FilterButtonInnerHTML() +
+        '</button>' +
       '</div>' +
       '<div id="results-section">' + ResultsSectionHTML() + '</div>' +
     '</div>';
 }
+function FILTER_BTN_CLASS() {
+  return "btn search-filter" + (state.activeTags.length ? " on" : "");
+}
 function FilterButtonInnerHTML() {
-  return icon("sliders", 16) +
-    (state.activeTags.length ? ' <span class="fcount">' + state.activeTags.length + '</span>' : "");
+  return icon("sliders", 16) + '<span class="flabel">Inspiration</span>' +
+    (state.activeTags.length ? '<span class="fcount">' + state.activeTags.length + '</span>' : "");
 }
 function updateResultsSection() {
   const el = document.getElementById("results-section");
@@ -3152,7 +3275,7 @@ function updateResultsSection() {
 function updateFilterButton() {
   const el = document.getElementById("filter-btn");
   if (!el) return;
-  el.className = "btn search-filter" + (state.activeTags.length ? " on" : "");
+  el.className = FILTER_BTN_CLASS();
   el.innerHTML = FilterButtonInnerHTML();
 }
 function updateSearchClear() {
@@ -3551,28 +3674,39 @@ const MEAL_RESULT_MAX = 6;
 
 /* Split out from the picker so typing can replace just this block. Redrawing
    the page on every keystroke would take the focus out of the field. */
+/* Title on its own line, how many underneath it, and the two buttons down
+   the right-hand side centred across both. A long recipe name used to squeeze
+   the number box and the unit into nothing on a phone. */
+function MealPickRowHTML(pick, servId, addOnclick, clearOnclick) {
+  const unit = pick.unit || "servings";
+  return '<div class="meal-dish-pick">' +
+    '<span class="name">' + esc(pick.title) + '</span>' +
+    '<span class="qty">' +
+      '<input type="number" step="any" min="0" id="' + servId + '" ' +
+        'aria-label="How many ' + esc(unit) + '" ' +
+        'value="' + esc(String(pick.servings)) + '" />' +
+      '<span class="unit">' + esc(unit) + '</span>' +
+    '</span>' +
+    '<button class="btn btn-sm btn-meal" onclick="' + addOnclick + '">' +
+      icon("plus", 14) + ' Add</button>' +
+    '<button class="icon-btn" title="Pick something else" ' +
+      'onclick="' + clearOnclick + '">' + icon("x", 15) + '</button>' +
+  '</div>';
+}
+
 function MealDishResultsHTML(m) {
   const q = String(state.mealDishSearch[m.mealId] || "");
   const picked = state.mealDishPick[m.mealId] || null;
   if (picked) {
-    const r = recipeById(picked.recipeId);
     const counts = dishTitleCounts(m);
     const clash = counts[String(picked.title).trim().toLowerCase()] > 0;
     return (clash
       ? '<div class="meal-dup">Somebody is already bringing ' + esc(picked.title) +
           '. Add it anyway and the tile will read <b>Lots of ' + esc(picked.title) + '</b>.</div>'
       : "") +
-      '<div class="meal-dish-pick">' +
-        '<span class="name">' + esc(picked.title) + '</span>' +
-        '<input type="number" step="any" min="0" id="meal-serv-' + m.mealId + '" ' +
-          'aria-label="How many ' + esc(r ? r.servings.unit : "servings") + '" ' +
-          'value="' + esc(String(picked.servings)) + '" />' +
-        '<span class="unit">' + esc(r ? r.servings.unit : "servings") + '</span>' +
-        '<button class="btn btn-sm btn-meal" onclick="Actions.addMealDish(\\'' + m.mealId + '\\')">' +
-          icon("plus", 14) + ' Add</button>' +
-        '<button class="icon-btn" title="Pick something else" ' +
-          'onclick="Actions.clearMealDishPick(\\'' + m.mealId + '\\')">' + icon("x", 15) + '</button>' +
-      '</div>';
+      MealPickRowHTML(picked, "meal-serv-" + m.mealId,
+        "Actions.addMealDish(\\'" + m.mealId + "\\')",
+        "Actions.clearMealDishPick(\\'" + m.mealId + "\\')");
   }
   if (!q.trim()) return "";
   const all = mealDishMatches(q);
@@ -3695,6 +3829,15 @@ function MealPastTileHTML(m) {
       ? '<div class="meal-body">' +
           '<div class="meal-sec">Who came</div>' + MealGuestsHTML(m) +
           '<div class="meal-sec">What was on the table</div>' + MealDishesHTML(m) +
+          /* A meal that has been eaten still sits on the page forever
+             otherwise. Only the host can clear it, and it goes the same way
+             a cancellation does - off everyone's calendar, not just ours. */
+          (m.myStatus === "owner"
+            ? '<div class="meal-actions">' +
+                '<button class="btn btn-sm btn-no" onclick="Actions.cancelMeal(\\'' + m.mealId + '\\')">' +
+                  icon("trash", 14) + ' Delete this meal</button>' +
+              '</div>'
+            : "") +
         '</div>'
       : "") +
   '</div>';
@@ -4052,6 +4195,15 @@ function updateChangeBanner() {
 /* Render: Detail                                                          */
 /* ====================================================================== */
 const SCALE_PRESETS = [0.25, 0.5, 1, 2, 4];
+/* Whether the custom chip is the live choice, and what it should read. Called
+   wherever a scale is set from outside the servings row - opening a recipe
+   off the calendar, moving a scheduled portion - so the chip never disagrees
+   with the amounts underneath it. */
+function syncCustomScale() {
+  state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
+  state._scaleEdit = false;
+  if (state.customScaleOpen) state.customScale = trimNumber(state.scale);
+}
 
 /* One rating per cookbook, and only once that cookbook has actually made the
    thing. A verdict from a kitchen that has never cooked it is not a verdict,
@@ -4135,6 +4287,23 @@ function RecipeBodyHTML(r, hideLog) {
   const scaleBtns = SCALE_PRESETS.map(p =>
     '<button class="scale-btn ' + (!state.customScaleOpen && scale === p ? "active" : "") + '" onclick="Actions.setScale(' + p + ')">' + p + 'x</button>'
   ).join("");
+  /* The old pairing was a Custom button that revealed a number box beside it,
+     which is two controls for one number and never fitted on a phone. The
+     chip is the field: its own label is what you type into, and what you last
+     typed stays on it so coming back to 6x does not start from blank. */
+  const customTxt = state.customScaleOpen ? trimNumber(scale) : (state.customScale || "");
+  const customChip = state._scaleEdit
+    ? '<span class="scale-btn scale-custom' + (state.customScaleOpen ? " active" : "") + '">' +
+        '<input id="scale-custom" class="scale-custom-field" type="text" inputmode="decimal" ' +
+          'autocomplete="off" placeholder="__" aria-label="Custom multiplier" ' +
+          'value="' + esc(customTxt || state.customScale || "") + '" ' +
+          'oninput="Actions.scaleDigitsOnly(this)" ' +
+          'onblur="Actions.commitCustomScale(this.value)" ' +
+          'onkeydown="if(event.key===\\'Enter\\'){event.preventDefault();this.blur();}" />' +
+        '<span class="scale-x">x</span>' +
+      '</span>'
+    : '<button class="scale-btn scale-custom' + (state.customScaleOpen ? " active" : "") + '" ' +
+        'onclick="Actions.editCustomScale()">' + esc(customTxt || "__") + 'x</button>';
 
   const ingItems = r.ingredients.map(ing => {
     const mv = scaledVal(ing.metricValue, scale);
@@ -4154,10 +4323,7 @@ function RecipeBodyHTML(r, hideLog) {
   return '' +
     '<div class="row2">' +
       '<div class="panel"><div class="panel-label">Servings</div>' +
-        '<div class="scale-row">' + scaleBtns +
-          '<button class="scale-btn ' + (state.customScaleOpen ? "active" : "") + '" onclick="Actions.toggleCustomScale()">Custom</button>' +
-          (state.customScaleOpen ? '<input class="scale-custom-input" type="number" min="0.1" step="0.1" value="' + scale + '" onchange="Actions.setCustomScale(this.value)" />' : "") +
-        '</div>' +
+        '<div class="scale-row">' + scaleBtns + customChip + '</div>' +
         '<p class="makes-line">Makes <span class="font-mono" style="color:var(--ink)">' + scaledServings + '</span> ' + esc(r.servings.unit) + '</p>' +
       '</div>' +
       '<div class="panel"><div class="panel-label"><span>Per serving</span><span>' + (m.source === "site" ? "from source" : "estimated") + '</span></div>' +
@@ -4220,7 +4386,7 @@ function DetailViewHTML(r) {
     (r.ours ? visibilityPill(r, true) : "") + '</div>';
   /* Its own row underneath, because it does something to the calendar rather
      than to the recipe and reads oddly sitting among the marks. */
-  const schedRow = '<div class="detail-marks">' + ScheduleMarkHTML(r, true) + '</div>';
+  const schedRow = '<div class="detail-marks">' + ScheduleMarkHTML(r, true) + MealMarkHTML(r, true) + '</div>';
   /* Arrived here from a calendar square: say which one, and offer the way
      back out of it. The portions are already applied to the body below. */
   const sf = state.scheduledFor;
@@ -4252,6 +4418,7 @@ function DetailViewHTML(r) {
          rest is on its way. */
       (r.description ? '<p class="detail-desc">' + esc(r.description) + '</p>' : "") +
       creditRow +
+      MarkInterestHTML(r) +
       schedBanner +
       markRow +
       schedRow +
@@ -4300,7 +4467,7 @@ function IngredientRowHTML(ing, idx, total) {
         unitSelectHTML("ing-cunit-" + idx, ing.customaryUnit, CUSTOMARY_UNITS) +
         '<div class="step-controls">' +
           '<button class="icon-btn" ' + (idx === 0 ? "disabled" : "") + ' onclick="Actions.moveIngredient(' + idx + ',-1)">' + icon("chevronUp", 15) + '</button>' +
-          '<button class="icon-btn" ' + (idx === total - 1 ? "disabled" : "") + ' onclick="Actions.moveIngredient(' + idx + ',1)">' + icon("chevronDown", 15) + '</button>' +
+          '<button class="icon-btn" id="ing-down-' + idx + '" ' + (idx === total - 1 ? "disabled" : "") + ' onclick="Actions.moveIngredient(' + idx + ',1)">' + icon("chevronDown", 15) + '</button>' +
         '</div>' +
         '<button class="icon-btn" onclick="Actions.removeIngredient(' + idx + ')">' + icon("x", 16) + '</button>' +
       '</div>' +
@@ -4315,26 +4482,68 @@ function StepRowHTML(s, idx, total) {
       '<input class="timer-input" id="step-timer-' + idx + '" type="number" placeholder="min" value="' + esc(s.timerMinutes) + '" />' +
       '<div class="step-controls">' +
         '<button class="icon-btn" ' + (idx === 0 ? "disabled" : "") + ' onclick="Actions.moveStep(' + idx + ',-1)">' + icon("chevronUp", 15) + '</button>' +
-        '<button class="icon-btn" ' + (idx === total - 1 ? "disabled" : "") + ' onclick="Actions.moveStep(' + idx + ',1)">' + icon("chevronDown", 15) + '</button>' +
+        '<button class="icon-btn" id="step-down-' + idx + '" ' + (idx === total - 1 ? "disabled" : "") + ' onclick="Actions.moveStep(' + idx + ',1)">' + icon("chevronDown", 15) + '</button>' +
       '</div>' +
       '<button class="icon-btn" onclick="Actions.removeStep(' + idx + ')">' + icon("x", 16) + '</button>' +
     '</div>';
 }
 
-/* Four ways in, all the same shape: get a prompt, run it wherever you keep
-   your AI, paste the answer back. Named for where the recipe is coming from
-   rather than for the step you are about to do. */
-const IMPORT_ORDER = ["url", "text", "photo", "chat"];
+/* Five ways in. Four of them are the same shape - get a prompt, run it
+   wherever you keep your AI, paste the answer back - and the fifth is the
+   bulk JSON reader. One button opens the menu; the menu swaps the sheet's
+   own body for whichever one you pick, with a way back. */
+const IMPORT_ORDER = ["url", "text", "photo", "chat", "json"];
 function ImportButtonsHTML() {
-  return IMPORT_ORDER.map(function (mode) {
-    const s = IMPORT_SOURCES[mode];
-    return '<button class="btn btn-sm" onclick="Actions.openImportPrompt(\\'' + mode + '\\')">' +
-      icon(s.icon, 14) + ' ' + s.label + '</button>';
-  }).join("");
+  return '<button class="btn btn-sm" onclick="Actions.openImportPrompt()">' +
+    icon("upload", 14) + ' Import</button>';
+}
+function ImportMenuHTML() {
+  return '<p class="helper-text">Where is the recipe coming from? Everything here fills in the ' +
+    'form below so you can check it before it saves.</p>' +
+    '<div class="import-menu">' +
+    IMPORT_ORDER.map(function (mode) {
+      const s = IMPORT_SOURCES[mode];
+      return '<button class="btn import-choice" onclick="Actions.pickImportMode(\\'' + mode + '\\')">' +
+        icon(s.icon, 16) + '<span>' + s.label + '</span></button>';
+    }).join("") + '</div>';
+}
+function ImportBackLinkHTML() {
+  return '<button class="back-link import-back" onclick="Actions.backToImportMenu()">' +
+    icon("chevronLeft", 16) + ' All import options</button>';
+}
+
+/* A row is blank when nothing has been typed into it. The unit menus are
+   deliberately not consulted: an ingredient that is only a "tbsp" is not an
+   ingredient, and a step that is only a timer is not a step. */
+function blankIngredient() {
+  return { name: "", metricValue: "", metricUnit: "g", customaryValue: "", customaryUnit: "cup", notes: "" };
+}
+function blankStep() { return { text: "", timerMinutes: "" }; }
+function ingredientIsBlank(i) {
+  return !String((i && i.name) || "").trim() && String((i && i.metricValue) || "") === "" &&
+    String((i && i.customaryValue) || "") === "" && !String((i && i.notes) || "").trim();
+}
+function stepIsBlank(s) {
+  return !String((s && s.text) || "").trim() && String((s && s.timerMinutes) || "") === "";
+}
+/* There is always one empty row waiting at the bottom of each list, which is
+   what replaced the Add buttons. Idempotent, so calling it on every render
+   never grows the form on its own. */
+function ensureTrailingBlankRows(d) {
+  if (!d) return;
+  if (!d.ingredients.length || !ingredientIsBlank(d.ingredients[d.ingredients.length - 1])) {
+    d.ingredients.push(blankIngredient());
+  }
+  if (!d.steps.length || !stepIsBlank(d.steps[d.steps.length - 1])) d.steps.push(blankStep());
+}
+function stripBlankRows(d) {
+  d.ingredients = d.ingredients.filter(i => !ingredientIsBlank(i));
+  d.steps = d.steps.filter(s => !stepIsBlank(s));
 }
 
 function EditViewHTML() {
   const d = state.editDraft;
+  ensureTrailingBlankRows(d);
   const isNew = state.editIsNew;
   const ingredientsHTML = d.ingredients.map((ing, idx) => IngredientRowHTML(ing, idx, d.ingredients.length)).join("");
   const stepsHTML = d.steps.map((s, idx) => StepRowHTML(s, idx, d.steps.length)).join("");
@@ -4377,10 +4586,10 @@ function EditViewHTML() {
         '<select id="f-macro-source"><option value="site"' + (d.macrosPerServing.source === "site" ? " selected" : "") + '>From source</option>' +
           '<option value="estimated"' + (d.macrosPerServing.source === "estimated" ? " selected" : "") + '>Estimated</option></select>' +
       '</div>' +
-      '<div class="subhead-row"><span class="small-label">Ingredients</span><button class="btn btn-sm btn-ghost" onclick="Actions.addIngredient()">' + icon("plus", 14) + ' Add</button></div>' +
-      '<div id="ingredients-container">' + ingredientsHTML + '</div>' +
-      '<div class="subhead-row" style="margin-top:16px"><span class="small-label">Steps</span><button class="btn btn-sm btn-ghost" onclick="Actions.addStep()">' + icon("plus", 14) + ' Add</button></div>' +
-      '<div id="steps-container">' + stepsHTML + '</div>' +
+      '<div class="subhead-row"><span class="small-label">Ingredients</span></div>' +
+      '<div id="ingredients-container" oninput="Actions.growIngredients()" onchange="Actions.growIngredients()">' + ingredientsHTML + '</div>' +
+      '<div class="subhead-row" style="margin-top:16px"><span class="small-label">Steps</span></div>' +
+      '<div id="steps-container" oninput="Actions.growSteps()" onchange="Actions.growSteps()">' + stepsHTML + '</div>' +
       '<div class="field" style="margin-top:16px"><label>Source URL (optional)</label>' +
         '<input type="url" id="f-source-url" inputmode="url" autocomplete="off" ' +
           'placeholder="https://..." value="' + esc((d.source && d.source.url) || "") + '" />' +
@@ -4553,7 +4762,7 @@ function FiltersModalHTML() {
       ((c.tags || []).length ? '<div class="fwrap">' + c.tags.map(t => box(t)).join("") + '</div>' : "") +
       (c.groups || []).map(g => group(g, catPanelKey(c))).join("") +
     '</details>').join("");
-  const html = modalShell("Filters",
+  const html = modalShell("Get Inspired",
     '<div class="filter-scroll"><div class="filter-body" onscroll="updateFilterScrollHint()">' +
       body + '</div></div>' +
     '<div class="edit-actions">' +
@@ -4945,23 +5154,13 @@ function MealDraftResultsHTML() {
   if (!dr) return "";
   const pick = dr.pick;
   if (pick) {
-    const r = recipeById(pick.recipeId);
     const clash = dr.dishes.filter(function (d) {
       return d.title.trim().toLowerCase() === pick.title.trim().toLowerCase();
     }).length;
     return (clash
       ? '<div class="meal-dup">You already have ' + esc(pick.title) + ' on the list.</div>' : "") +
-      '<div class="meal-dish-pick">' +
-        '<span class="name">' + esc(pick.title) + '</span>' +
-        '<input type="number" step="any" min="0" id="meal-serv-draft" ' +
-          'aria-label="How many ' + esc(r ? r.servings.unit : "servings") + '" ' +
-          'value="' + esc(String(pick.servings)) + '" />' +
-        '<span class="unit">' + esc(r ? r.servings.unit : "servings") + '</span>' +
-        '<button class="btn btn-sm btn-meal" onclick="Actions.addMealDraftDish()">' +
-          icon("plus", 14) + ' Add</button>' +
-        '<button class="icon-btn" title="Pick something else" ' +
-          'onclick="Actions.clearMealDishPick(\\'draft\\')">' + icon("x", 15) + '</button>' +
-      '</div>';
+      MealPickRowHTML(pick, "meal-serv-draft",
+        "Actions.addMealDraftDish()", "Actions.clearMealDishPick(\\'draft\\')");
   }
   const q = String(dr.search || "");
   if (!q.trim()) return "";
@@ -4998,7 +5197,20 @@ function MealFriendPickerHTML(already) {
   const q = (state.mealFriendSearch || "").trim().toLowerCase();
   const picked = {};
   ((dr && dr.guests) || []).forEach(function (u) { picked[u.toLowerCase()] = 1; });
-  const rows = state.friends.map(function (f) {
+  /* Everyone you have ticked collects at the top, alphabetically, so a long
+     friend list does not leave you scrolling to check who is already on. The
+     ones the meal has settled already sit at the bottom, since they are
+     there to be read rather than tapped. */
+  const rank = function (f) {
+    const key = (f.members[0] || "").toLowerCase();
+    if (already && already[f.label]) return 2;
+    return picked[key] ? 0 : 1;
+  };
+  const ordered = state.friends.slice().sort(function (a, b) {
+    return (rank(a) - rank(b)) ||
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+  });
+  const rows = ordered.map(function (f) {
     /* One row per cookbook, keyed on any one of its members - inviting a
        cookbook invites everybody in it, which is what the sub-line says
        where a cookbook has more than one person in it. */
@@ -5023,7 +5235,7 @@ function MealFriendPickerHTML(already) {
   return '<input type="text" id="meal-friend-search" autocomplete="off" ' +
       'placeholder="Search friends..." value="' + esc(state.mealFriendSearch || "") + '" ' +
       'oninput="Actions.mealFriendSearch(this.value)" />' +
-    '<div class="pick-list pick-list-3">' +
+    '<div class="pick-list pick-list-3" id="meal-friend-list">' +
       (rows ||
         (q ? '<p class="helper-text">No one by that name.</p>'
            : '<p class="helper-text">Nobody left to invite.</p>')) + '</div>';
@@ -5048,13 +5260,17 @@ function MealModalHTML() {
         'value="' + esc(dr.location || "") + '" /></div>' +
     '<div class="groc-range">' +
       '<div class="field"><label>Day</label>' +
-        '<input type="date" id="meal-date" value="' + esc(dr.date) + '" /></div>' +
+        '<input type="date" id="meal-date" min="' + esc(localToday()) + '" value="' + esc(dr.date) + '" /></div>' +
       '<div class="field"><label>Time</label>' +
         '<input type="time" id="meal-time" value="' + esc(dr.time) + '" /></div>' +
     '</div>' +
-    '<div class="step-block"><div class="step-label">Who to invite</div>' +
-      MealFriendPickerHTML(null) +
-    '</div>' +
+    /* Editing has its own Invite more button on the tile, so the whole
+       picker would be a second way to do one thing. */
+    (editing
+      ? ""
+      : '<div class="step-block"><div class="step-label">Who to invite</div>' +
+          MealFriendPickerHTML(null) +
+        '</div>') +
     (editing ? "" : MealDraftDishesHTML()) +
     (editing
       ? '<p class="helper-text">Moving the day moves everyone\\'s dishes with it, on their ' +
@@ -5085,6 +5301,42 @@ function MealGuestsModalHTML() {
     '</div>');
 }
 
+/* Which table, and how much of it you are bringing. The same two questions
+   the sign-up box on a tile asks, reached from the recipe instead. */
+function MealAddModalHTML() {
+  const d = state.mealAdd;
+  const meals = mealsIcanBringTo();
+  if (!d || !meals.length) return modalShell("Add to Community Meal", "");
+  const r = recipeById(d.recipeId);
+  const unit = d.unit || "servings";
+  const chosen = meals.filter(function (m) { return m.mealId === d.mealId; })[0] || meals[0];
+  const clash = chosen && chosen.dishes.filter(function (x) {
+    return String(x.title).trim().toLowerCase() === String(d.title || "").trim().toLowerCase();
+  }).length;
+  return modalShell("Add to Community Meal",
+    '<p class="helper-text">' + esc(d.title || (r ? r.title : "This recipe")) +
+      ' — it lands on the table and on your own calendar for that day.</p>' +
+    '<div class="field"><label>Which meal</label>' +
+      '<select id="meal-add-pick" onchange="Actions.setMealAddMeal(this.value)">' +
+        meals.map(function (m) {
+          return '<option value="' + esc(m.mealId) + '"' +
+            (chosen && m.mealId === chosen.mealId ? " selected" : "") + '>' +
+            esc(m.title) + ' — ' + esc(shortDate(m.date)) + '</option>';
+        }).join("") +
+      '</select></div>' +
+    '<div class="field"><label>How many ' + esc(unit) + '</label>' +
+      '<input type="number" step="any" min="0" id="meal-add-serv" value="' + esc(String(d.servings)) + '" /></div>' +
+    (clash
+      ? '<div class="meal-dup">Somebody is already bringing ' + esc(d.title) +
+          '. Add it anyway and the tile will read <b>Lots of ' + esc(d.title) + '</b>.</div>'
+      : "") +
+    '<div class="edit-actions">' +
+      '<button class="btn" onclick="Actions.closeModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="Actions.confirmMealAdd()">' +
+        icon("plus", 15) + ' Add</button>' +
+    '</div>');
+}
+
 function RenameListModalHTML() {
   const L = state.pendingRenameList;
   const meta = state.groceryLists.filter(x => x.listId === L)[0];
@@ -5109,6 +5361,9 @@ function ConfirmDeleteListModalHTML() {
 }
 
 function ImportModalHTML() {
+  return modalShell("Import recipes", ImportModalBodyHTML());
+}
+function ImportModalBodyHTML() {
   const parsed = state.importParsed;
   let summary = "";
   if (parsed.length || state.importErrors.length) {
@@ -5119,7 +5374,7 @@ function ImportModalHTML() {
       (parsed.length ? '<ul>' + parsed.map(p => '<li>' + esc(p.body.title) + '</li>').join("") + '</ul>' : "") +
     '</div>';
   }
-  return modalShell("Import recipes",
+  return '' +
     '<p class="helper-text">Paste from your clipboard, or choose a file — one JSON recipe per line. Every imported recipe is added to your cookbook with a new recipe ID.</p>' +
     '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">' +
       '<button class="btn" style="flex:1; min-width:140px" onclick="Actions.pasteImportFile()">' + icon("copy", 16) + ' Paste recipes</button>' +
@@ -5133,11 +5388,13 @@ function ImportModalHTML() {
       '<button class="' + (state.importVisibility === "friends" ? "active" : "") + '" onclick="Actions.setImportVisibility(\\'friends\\')">' + icon("globe", 15) + ' All friends</button>' +
     '</div></div>' +
     '<button class="btn btn-primary btn-block" ' + (parsed.length === 0 || !state.importVisibility ? "disabled" : "") +
-      ' onclick="Actions.confirmImport()">Import ' + (parsed.length || "") + ' recipe' + (parsed.length === 1 ? "" : "s") + '</button>');
+      ' onclick="Actions.confirmImport()">Import ' + (parsed.length || "") + ' recipe' + (parsed.length === 1 ? "" : "s") + '</button>';
 }
 
 function UrlToRecipeModalHTML() {
   const u = state.urlToRecipe;
+  if (!u.mode) return modalShell("Import", ImportMenuHTML());
+  if (u.mode === "json") return modalShell("From JSON", ImportBackLinkHTML() + ImportModalBodyHTML());
   const src = IMPORT_SOURCES[u.mode] || IMPORT_SOURCES.url;
   let step1;
   if (u.mode === "url") {
@@ -5155,6 +5412,7 @@ function UrlToRecipeModalHTML() {
       '</p>';
   }
   return modalShell(src.label,
+    ImportBackLinkHTML() +
     '<div class="step-block">' + step1 +
       '<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="Actions.generatePrompt()">Generate prompt</button>' +
     '</div>' +
@@ -5482,7 +5740,6 @@ function ActionsModalHTML() {
     '<div style="display:flex; flex-direction:column; gap:8px;">' +
       '<button class="btn btn-primary btn-block" onclick="Actions.closeModal(); Actions.openNew();">' + icon("plus", 16) + ' New recipe</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openFriends();">' + icon("users", 16) + ' Friends/Notifications' + (alerts ? " (" + alerts + ")" : "") + '</button>' +
-      '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\\'import\\');">' + icon("upload", 16) + ' Import recipes</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.exportAll();">' + icon("download", 16) + ' Export ' + (hasActiveFilter() ? "selected" : "all") + '</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.reload();">' + icon("sync", 16) + ' Reload from server</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\\'shareApp\\');">' + icon("share", 16) + ' Share App</button>' +
@@ -5612,8 +5869,7 @@ function renderModal() {
   else if (state.modal === "visibility") root.innerHTML = VisibilityModalHTML();
   else if (state.modal === "owner") root.innerHTML = OwnerModalHTML();
   else if (state.modal === "filters") { root.innerHTML = FiltersModalHTML(); updateFilterScrollHint(); }
-  else if (state.modal === "actions") root.innerHTML = ActionsModalHTML();
-  else if (state.modal === "schedule") root.innerHTML = ScheduleModalHTML();
+  else if (state.modal === "actions") root.innerHTML = ActionsModalHTML();  else if (state.modal === "schedule") root.innerHTML = ScheduleModalHTML();
   else if (state.modal === "calDay") root.innerHTML = CalDayModalHTML();
   else if (state.modal === "confirmDeleteList") root.innerHTML = ConfirmDeleteListModalHTML();
   else if (state.modal === "addGroceryItem") root.innerHTML = AddGroceryItemModalHTML();
@@ -5622,6 +5878,7 @@ function renderModal() {
   else if (state.modal === "groceriesHelp") root.innerHTML = GroceriesHelpModalHTML();
   else if (state.modal === "calendarHelp") root.innerHTML = CalendarHelpModalHTML();
   else if (state.modal === "meal") root.innerHTML = MealModalHTML();
+  else if (state.modal === "mealAdd") root.innerHTML = MealAddModalHTML();
   else if (state.modal === "mealGuests") root.innerHTML = MealGuestsModalHTML();
   else if (state.modal === "mergeCommon") root.innerHTML = MergeCommonModalHTML();
   else if (state.modal === "exclusions") root.innerHTML = ExclusionsModalHTML();
@@ -5897,7 +6154,7 @@ Actions.adminSetPassword = async function() {
 /* --- navigation --- */
 Actions.openDetail = function(id, showLogs) {
   state.activeId = id; state.view = "detail"; state.scale = 1;
-  state.customScaleOpen = false; state._showAllLogs = !!showLogs;
+  state.customScaleOpen = false; state._scaleEdit = false; state._showAllLogs = !!showLogs;
   /* Reached from the box rather than from a calendar square, so the portions
      are the recipe's own again and the banner has nothing to say. */
   state.scheduledFor = null;
@@ -6205,8 +6462,18 @@ Actions.toggleShare = function(i) {
   if (at >= 0) d._shareWith.splice(at, 1); else d._shareWith.push(key);
   renderApp();
 };
+/* Setting a mark is one tap and costs nothing. Taking one off can lose you a
+   recipe you no longer have any other route back to - an unpinned recipe from
+   a share link is gone from the box entirely - so the second tap asks. */
+const UNMARK_WARNINGS = {
+  pin: "Unpin this recipe? It comes out of your cookbook. Nothing of theirs is deleted, " +
+    "but you will need their link or their friendship to find it again.",
+  star: "Remove this from your favorites?",
+  later: "Take this off Saved for later?"
+};
 Actions.toggleMark = async function(kind, id) {
   const on = !isMarked(kind, id);
+  if (!on && !confirm(UNMARK_WARNINGS[kind] || "Remove this mark?")) return;
   const list = state.marks[kind] || (state.marks[kind] = []);
   if (on) list.push(id); else list.splice(list.indexOf(id), 1);
   renderApp();
@@ -6219,9 +6486,42 @@ Actions.toggleMark = async function(kind, id) {
 };
 Actions.setSort = function(v) { state.sort = v; updateResultsSection(); };
 
-Actions.setScale = function(p) { state.scale = p; state.customScaleOpen = false; updateRecipeBody(); };
-Actions.toggleCustomScale = function() { state.customScaleOpen = !state.customScaleOpen; updateRecipeBody(); };
-Actions.setCustomScale = function(v) { const n = parseFloat(v); if (!isNaN(n) && n > 0) state.scale = n; updateRecipeBody(); };
+Actions.setScale = function(p) { state.scale = p; state.customScaleOpen = false; state._scaleEdit = false; updateRecipeBody(); };
+/* Tapping the chip turns it into the field. The cursor goes to the end and
+   the text is selected, so on a laptop you can type straight over it and on
+   a phone the keyboard comes up on the number rather than on nothing. */
+Actions.editCustomScale = function() {
+  state._scaleEdit = true;
+  updateRecipeBody();
+  setTimeout(function () {
+    const el = document.getElementById("scale-custom");
+    if (!el) return;
+    el.focus();
+    if (el.setSelectionRange) { try { el.setSelectionRange(0, String(el.value).length); } catch (e) {} }
+  }, 0);
+};
+/* A multiplier is a number. Anything else - including the x that is already
+   printed beside the field - is dropped as it is typed rather than rejected
+   afterwards, and only the first decimal point survives. */
+Actions.scaleDigitsOnly = function(el) {
+  if (!el) return;
+  const clean = String(el.value).replace(/[^0-9.]/g, "").replace(/\\.(?=.*\\.)/g, "");
+  if (clean !== el.value) el.value = clean;
+  state.customScale = clean;
+};
+Actions.commitCustomScale = function(v) {
+  const clean = String(v == null ? "" : v).replace(/[^0-9.]/g, "").replace(/\\.(?=.*\\.)/g, "");
+  const n = parseFloat(clean);
+  state._scaleEdit = false;
+  if (!isNaN(n) && n > 0) {
+    state.scale = n;
+    state.customScale = trimNumber(n);
+    state.customScaleOpen = true;
+  }
+  updateRecipeBody();
+};
+Actions.toggleCustomScale = function() { Actions.editCustomScale(); };
+Actions.setCustomScale = function(v) { Actions.commitCustomScale(v); };
 Actions.toggleShowAllLogs = function() { state._showAllLogs = !state._showAllLogs; updateRecipeBody(); };
 
 /* ---- Cook mode -------------------------------------------------------
@@ -6296,7 +6596,10 @@ Actions.openModal = function(name) {
   state.modalError = "";
   state._acctBusy = false;
   if (name === "import") { state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = ""; }
-  if (name === "urlToRecipe") state.urlToRecipe = { mode: state._nextImportMode || "url", url: "", text: "", prompt: "", generated: false };
+  if (name === "urlToRecipe") {
+    state.urlToRecipe = { mode: state._nextImportMode || "", url: "", text: "", prompt: "", generated: false };
+    state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = "";
+  }
   renderModal();
 };
 Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); updateLibraryChrome(); };
@@ -6541,9 +6844,24 @@ Actions.exportAll = async function() {
 
 /* --- URL to recipe --- */
 Actions.openImportPrompt = function(mode) {
-  state._nextImportMode = mode;
+  state._nextImportMode = mode || "";
   Actions.openModal("urlToRecipe");
   state._nextImportMode = null;
+};
+/* Each choice gets a clean sheet: the URL you typed for one source is not the
+   text you meant to paste into another. */
+Actions.pickImportMode = function(mode) {
+  state.urlToRecipe = { mode: mode, url: "", text: "", prompt: "", generated: false };
+  if (mode === "json") {
+    state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = "";
+  }
+  state.modalError = "";
+  renderModal();
+};
+Actions.backToImportMenu = function() {
+  state.urlToRecipe = { mode: "", url: "", text: "", prompt: "", generated: false };
+  state.modalError = "";
+  renderModal();
 };
 Actions.generatePrompt = function() {
   const u = state.urlToRecipe;
@@ -6690,9 +7008,38 @@ Actions.setDraftVisibility = function(v) {
   state.editDraft.visibility = v;
   renderApp();
 };
+/* Typing in the last row conjures the next one. The row is appended to the
+   container rather than re-rendered into it, because a re-render would take
+   the caret out of the field being typed in. */
+function appendDraftRow(boxId, rowHTML, prevDownId) {
+  const box = document.getElementById(boxId);
+  if (!box || typeof box.insertAdjacentHTML !== "function") { renderApp(); return; }
+  box.insertAdjacentHTML("beforeend", rowHTML);
+  const prev = document.getElementById(prevDownId);
+  if (prev) prev.disabled = false;
+}
+Actions.growIngredients = function() {
+  const d = state.editDraft;
+  if (!d) return;
+  syncDraftFromDOM();
+  const n = d.ingredients.length;
+  if (!n || ingredientIsBlank(d.ingredients[n - 1])) return;
+  d.ingredients.push(blankIngredient());
+  appendDraftRow("ingredients-container",
+    IngredientRowHTML(d.ingredients[n], n, n + 1), "ing-down-" + (n - 1));
+};
+Actions.growSteps = function() {
+  const d = state.editDraft;
+  if (!d) return;
+  syncDraftFromDOM();
+  const n = d.steps.length;
+  if (!n || stepIsBlank(d.steps[n - 1])) return;
+  d.steps.push(blankStep());
+  appendDraftRow("steps-container", StepRowHTML(d.steps[n], n, n + 1), "step-down-" + (n - 1));
+};
 Actions.addIngredient = function() {
   syncDraftFromDOM();
-  state.editDraft.ingredients.push({ name: "", metricValue: "", metricUnit: "g", customaryValue: "", customaryUnit: "cup", notes: "" });
+  state.editDraft.ingredients.push(blankIngredient());
   renderApp();
 };
 Actions.removeIngredient = function(idx) {
@@ -6710,7 +7057,7 @@ Actions.moveIngredient = function(idx, dir) {
 };
 Actions.addStep = function() {
   syncDraftFromDOM();
-  state.editDraft.steps.push({ text: "", timerMinutes: "" });
+  state.editDraft.steps.push(blankStep());
   renderApp();
 };
 Actions.removeStep = function(idx) {
@@ -6731,6 +7078,8 @@ Actions.saveRecipeForm = async function() {
   const d = state.editDraft;
   if (!d.title || !d.title.trim()) { toast("Give the recipe a title first"); return; }
   if (!d.visibility) { toast("Choose who can see this first"); return; }
+  /* The spare row on the end of each list is scaffolding, not content. */
+  stripBlankRows(d);
   if (state.busy) return;
   state.busy = true;
   const body = normalizeBody(Object.assign({}, d, {
@@ -7054,7 +7403,7 @@ Actions.openScheduled = function(entryId) {
   state.activeId = e.recipeId;
   state.view = "detail";
   state.scale = factorFor(recipeById(e.recipeId), e.servings);
-  state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
+  syncCustomScale();
   state.scheduledFor = { entryId: e.entryId, recipeId: e.recipeId, date: e.date, servings: e.servings };
   state._showAllLogs = false;
   setWatch(e.recipeId);
@@ -7063,7 +7412,7 @@ Actions.openScheduled = function(entryId) {
      body, so it is worked out again once that has landed. */
   loadBodyInto(e.recipeId, function () {
     state.scale = factorFor(recipeById(e.recipeId), e.servings);
-    state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
+    syncCustomScale();
   });
 };
 
@@ -7198,7 +7547,7 @@ Actions.addToCalendar = async function() {
       if (state.scheduledFor && state.scheduledFor.entryId === d.entryId) {
         state.scheduledFor = Object.assign({}, state.scheduledFor, { date: date, servings: servings });
         state.scale = factorFor(r, servings);
-        state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
+        syncCustomScale();
       }
       toast(r.title + " moved to " + shortDate(date));
     } else {
@@ -7265,10 +7614,30 @@ Actions.openEditMeal = function(mealId) {
 Actions.mealFriendSearch = function(v) {
   state.mealFriendSearch = v;
   readMealDraftFields();
-  renderModal();
+  withMealSheetScroll(renderModal);
   const el = document.getElementById("meal-friend-search");
   if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
 };
+/* Redrawing the sheet resets every scroller in it, so ticking a friend
+   halfway down a long list used to throw both the list and the sheet back to
+   the top. Both offsets are read before the redraw and put back after it. */
+function withMealSheetScroll(fn) {
+  const read = function (sel) {
+    const el = typeof document !== "undefined" && document.querySelector
+      ? document.querySelector(sel) : null;
+    return el ? (el.scrollTop || 0) : 0;
+  };
+  const listAt = read("#meal-friend-list");
+  const sheetAt = read(".modal-box");
+  fn();
+  const put = function (sel, y) {
+    const el = typeof document !== "undefined" && document.querySelector
+      ? document.querySelector(sel) : null;
+    if (el && y) el.scrollTop = y;
+  };
+  put("#meal-friend-list", listAt);
+  put(".modal-box", sheetAt);
+}
 Actions.toggleMealGuest = function(username) {
   const dr = state.mealDraft;
   if (!dr) return;
@@ -7277,7 +7646,7 @@ Actions.toggleMealGuest = function(username) {
   readMealDraftFields();
   const at = dr.guests.map(u => u.toLowerCase()).indexOf(String(username).toLowerCase());
   if (at >= 0) dr.guests.splice(at, 1); else dr.guests.push(username);
-  renderModal();
+  withMealSheetScroll(renderModal);
 };
 function readMealDraftFields() {
   const dr = state.mealDraft;
@@ -7300,6 +7669,13 @@ Actions.saveMeal = async function() {
   const title = String(dr.title || "").trim();
   if (!title) { state.modalError = "Give the meal a name."; renderModal(); return; }
   if (!dr.date) { state.modalError = "Pick a day."; renderModal(); return; }
+  /* A meal you cannot go to is not a meal. The date input carries a min as
+     well, but a typed date gets past that on some keyboards. */
+  if (dr.date < localToday()) {
+    state.modalError = "That day has already been. Pick today or later.";
+    renderModal();
+    return;
+  }
   try {
     if (dr.mealId) {
       await API("meal/update", {
@@ -7402,15 +7778,62 @@ Actions.leaveMeal = async function(mealId) {
   } catch (err) { toast(err.message); }
   renderApp();
 };
+Actions.openMealAdd = async function(recipeId) {
+  const meals = mealsIcanBringTo();
+  if (!meals.length) { toast("No upcoming meal to add it to"); return; }
+  const sum = summaryById(recipeId);
+  if (!sum) { toast("That recipe is no longer there"); return; }
+  await ensureBody(recipeId);
+  const r = recipeById(recipeId) || sum;
+  state.mealAdd = {
+    recipeId: recipeId, title: r.title, mealId: meals[0].mealId,
+    servings: (r.servings && Number(r.servings.base)) || 1,
+    unit: (r.servings && r.servings.unit) || "servings"
+  };
+  Actions.openModal("mealAdd");
+};
+Actions.setMealAddMeal = function(mealId) {
+  if (!state.mealAdd) return;
+  const f = document.getElementById("meal-add-serv");
+  if (f) state.mealAdd.servings = f.value;
+  state.mealAdd.mealId = mealId;
+  renderModal();
+};
+Actions.confirmMealAdd = async function() {
+  const d = state.mealAdd;
+  if (!d || state.busy) return;
+  const f = document.getElementById("meal-add-serv");
+  const servings = Number(f ? f.value : d.servings);
+  if (!(servings > 0)) { toast("How many are you making?"); return; }
+  const m = mealById(d.mealId);
+  if (!m) { toast("That meal is no longer there"); return; }
+  const clash = m.dishes.filter(function (x) {
+    return String(x.title).trim().toLowerCase() === String(d.title).trim().toLowerCase();
+  }).length;
+  if (clash && !confirm("Somebody is already bringing " + d.title +
+    ". Add it anyway? The tile will read \\"Lots of " + d.title + "\\".")) return;
+  try {
+    await API("meal/dish/add", { mealId: d.mealId, recipeId: d.recipeId, servings: servings });
+    state.mealAdd = null;
+    Actions.closeModal();
+    await refreshLibrary(false);
+    toast("On the table, and on your calendar");
+  } catch (err) { toast(err.message); }
+};
 Actions.cancelMeal = async function(mealId) {
   const m = mealById(mealId);
   if (!m) return;
-  if (!confirm("Cancel " + m.title + " for everyone? Every guest's dishes come off their " +
-    "calendars as well as yours. This cannot be undone.")) return;
+  const gone = isMealPast(m);
+  const warn = gone
+    ? "Delete " + m.title + " for everyone? It comes off every guest's calendar as well as " +
+      "yours. This cannot be undone."
+    : "Cancel " + m.title + " for everyone? Every guest's dishes come off their " +
+      "calendars as well as yours. This cannot be undone.";
+  if (!confirm(warn)) return;
   try {
     await API("meal/cancel", { mealId });
     await refreshLibrary(false);
-    toast("Meal cancelled");
+    toast(gone ? "Meal deleted" : "Meal cancelled");
   } catch (err) { toast(err.message); }
   renderApp();
 };
@@ -7454,27 +7877,39 @@ Actions.onMealDishInput = function(mealId, v) {
   const m = mealById(mealId);
   if (box && m) box.innerHTML = MealDishResultsHTML(m);
 };
-/* Tapping the bringing box on a tile halfway down a long meals page puts the
-   iOS keyboard over the field you just tapped, and the browser's own scroll
-   correction fires before the keyboard has finished coming up, so the field
-   lands wherever the page happened to be. Nudging it into the middle of what
-   is left of the viewport after the keyboard settles is the fix: block
-   "center" rather than "nearest", because "nearest" considers a field hidden
-   behind the keyboard to be already in view. */
+/* Tapping a field halfway down a long page puts the keyboard over the thing
+   you just tapped, and the browser's own scroll correction fires before the
+   keyboard has finished coming up, so the field lands wherever the page
+   happened to be. This puts it near the top of whatever room is left and
+   leaves it there: "start" rather than "center", because a field that stays
+   put while results appear and disappear underneath it is the whole point -
+   centring re-aims at the field every time the block below it changes
+   height, which is what made typing with no matches jump around. */
 function bringIntoView(el) {
   if (!el || !el.scrollIntoView) return;
-  try { el.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  try { el.scrollIntoView({ block: "start", behavior: "smooth" }); }
   catch (e) { el.scrollIntoView(); }
 }
-Actions.focusMealSearch = function(id) {
-  const el = document.getElementById(id);
+/* The second pass catches the resize when the keyboard opens, which is what
+   actually shifts the field out from under the cursor. It is cancelled the
+   moment a key is pressed, so nothing moves once you are typing. */
+let pendingFocusScroll = 0;
+function cancelFocusScroll() {
+  if (!pendingFocusScroll) return;
+  clearTimeout(pendingFocusScroll);
+  pendingFocusScroll = 0;
+}
+function focusIntoView(el) {
   if (!el) return;
-  /* Two passes. The first is for the case where the keyboard is already up
-     and nothing is going to move; the second catches the resize after it
-     opens, which is what actually shifts the field out from under the
-     cursor. */
   bringIntoView(el);
-  setTimeout(function () { bringIntoView(document.getElementById(id)); }, 320);
+  cancelFocusScroll();
+  pendingFocusScroll = setTimeout(function () {
+    pendingFocusScroll = 0;
+    if (typeof document !== "undefined" && document.activeElement === el) bringIntoView(el);
+  }, 320);
+}
+Actions.focusMealSearch = function(id) {
+  focusIntoView(document.getElementById(id));
 };
 /* Having picked a recipe, the one thing still being asked for is how many you
    are making, so the cursor goes there rather than leaving you to hunt for a
@@ -7485,13 +7920,23 @@ function focusMealServings(mealId) {
     if (!el) return;
     el.focus();
     if (el.setSelectionRange) { try { el.setSelectionRange(0, String(el.value).length); } catch (e) {} }
-    bringIntoView(el);
+    focusIntoView(el);
   }, 0);
 }
-Actions.pickMealDish = function(mealId, recipeId) {
-  const r = recipeById(recipeId);
-  if (!r) { toast("That recipe is no longer there"); return; }
-  const pick = { recipeId: recipeId, title: r.title, servings: r.servings.base || 1 };
+/* The recipe summary a sync brings back does not carry servings - the body
+   is fetched only when a recipe is opened - so a recipe nobody has opened
+   this session had no servings.base to read, and picking it threw before it
+   could do anything. That is why only the one recipe whose body happened to
+   be cached could be chosen. The body is fetched first now, and the unit
+   travels on the pick so the row can label itself without it. */
+Actions.pickMealDish = async function(mealId, recipeId) {
+  const sum = summaryById(recipeId);
+  if (!sum) { toast("That recipe is no longer there"); return; }
+  await ensureBody(recipeId);
+  const r = recipeById(recipeId) || sum;
+  const sv = (r.servings && Number(r.servings.base)) || 1;
+  const unit = (r.servings && r.servings.unit) || "servings";
+  const pick = { recipeId: recipeId, title: r.title, servings: sv, unit: unit };
   if (mealId === "draft") {
     if (!state.mealDraft) return;
     readMealDraftFields();
@@ -8189,6 +8634,24 @@ if (typeof window !== "undefined" && window.visualViewport && window.addEventLis
   vvport.addEventListener("scroll", syncViewportVars);
   window.addEventListener("orientationchange", syncViewportVars);
   syncViewportVars();
+}
+/* Every text field in the app, not only the ones that asked. Bound once on
+   the document because the views are emptied and refilled on every render,
+   so per-field handlers would need rewiring each time - and because the rule
+   is the same everywhere: the thing you are typing into comes to the top of
+   whatever the keyboard has left, and then stays there. The first keystroke
+   cancels the follow-up pass, so nothing moves under you mid-word. */
+if (typeof document !== "undefined" && document.addEventListener) {
+  const TYPEABLE = { INPUT: 1, TEXTAREA: 1 };
+  const NO_SCROLL_TYPES = { checkbox: 1, radio: 1, file: 1, button: 1, submit: 1, hidden: 1, range: 1 };
+  document.addEventListener("focusin", function (e) {
+    const el = e && e.target;
+    if (!el || !TYPEABLE[el.tagName]) return;
+    if (el.tagName === "INPUT" && NO_SCROLL_TYPES[String(el.type || "text").toLowerCase()]) return;
+    focusIntoView(el);
+  });
+  document.addEventListener("input", cancelFocusScroll);
+  document.addEventListener("focusout", cancelFocusScroll);
 }
 /* Closing the tab should free the recipe rather than leave it locked for
    the full timeout. Best effort: this does not always fire on mobile,
@@ -9714,6 +10177,14 @@ async function handleApi(route, body, env, request) {
       env.DB.prepare(
         "SELECT recipe_id, kind FROM recipe_marks WHERE cookbook_id = ?"
       ).bind(me.cookbookId),
+      /* How many other cookbooks have pinned, favorited or saved one of our
+         own recipes. A count and nothing more: which cookbooks they are is
+         deliberately not returned, so the owner cannot work out who. */
+      env.DB.prepare(
+        "SELECT m.recipe_id, m.kind, COUNT(*) AS n FROM recipe_marks m " +
+        "JOIN recipes r ON r.recipe_id = m.recipe_id " +
+        "WHERE r.cookbook_id = ? AND m.cookbook_id != ? GROUP BY m.recipe_id, m.kind"
+      ).bind(me.cookbookId, me.cookbookId),
       /* Who our own private recipes have been handed to. */
       env.DB.prepare(
         "SELECT s.recipe_id, s.cookbook_id FROM recipe_shares s " +
@@ -9746,10 +10217,11 @@ async function handleApi(route, body, env, request) {
     const cookRows = at(7);
     const cookFeedRows = at(8);
     const markRows = at(9);
-    const shareRows = at(10);
-    const schedRows = at(11);
-    const listRows = at(12);
-    const prefRow = at(13)[0] || null;
+    const markCountRows = at(10);
+    const shareRows = at(11);
+    const schedRows = at(12);
+    const listRows = at(13);
+    const prefRow = at(14)[0] || null;
 
     const friendCbs = sinceRows.map(r => r.cb);
 
@@ -9821,6 +10293,12 @@ async function handleApi(route, body, env, request) {
     const marks = { pin: [], star: [], later: [] };
     for (const m of markRows) if (marks[m.kind]) marks[m.kind].push(m.recipe_id);
 
+    const markCounts = {};
+    for (const row of markCountRows) {
+      const rec = markCounts[row.recipe_id] || (markCounts[row.recipe_id] = { pin: 0, star: 0, later: 0 });
+      if (row.kind in rec) rec[row.kind] = Number(row.n) || 0;
+    }
+
     const shares = {};
     for (const row of shareRows) {
       const label = labelFor[row.cookbook_id];
@@ -9865,6 +10343,7 @@ async function handleApi(route, body, env, request) {
       cooks,
       cookFeed,
       marks,
+      markCounts,
       shares,
       schedule,
       meals: shapeMeals(mealRaw.meals, mealLabel, me.cookbookId),

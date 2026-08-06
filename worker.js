@@ -1,11 +1,19 @@
-// worker.js — Recipe Box, all-in-one Cloudflare Worker
+// worker.js — Kindred Cupboard, all-in-one Cloudflare Worker
 //
 // One Worker serves the app itself and the D1-backed API behind it:
 // accounts, recipes, cook-log comments and friendships.
 //
 // Routes:
-//   POST /api/session            -> open or create a cookbook
+//   POST /api/auth/signup        -> create an account, join a cookbook, or claim an old one
+//   POST /api/auth/login         -> email and password in, session token out
+//   POST /api/auth/logout        -> drop this device's session token
+//   POST /api/account/password   -> change the password
+//   POST /api/account/email      -> change the email address on the account
+//   POST /api/admin/password     -> hand somebody a temporary password (admin token)
 //   POST /api/library            -> everything visible to the signed-in user
+//   POST /api/recipe/body        -> one recipe in full, with its cook log
+//   POST /api/recipe/bodies      -> several recipes in full, for lists and exports
+//   POST /api/recipe/rate        -> your cookbook's one rating, or clear it
 //   POST /api/recipe/save        -> create or update ONE recipe
 //   POST /api/recipe/import      -> add many recipes at once
 //   POST /api/recipe/visibility  -> private <-> shared with friends
@@ -20,7 +28,7 @@
 //   POST /api/grocery/save       -> rewrite the items on one list
 //   POST /api/grocery/rename     -> rename a list
 //   POST /api/grocery/delete     -> delete a list
-//   POST /api/comment/add        -> log a cook (rating required)
+//   POST /api/comment/add        -> log a cook (comment optional, no rating)
 //   POST /api/comment/delete     -> remove your own cook log entry
 //   POST /api/friend/request     -> ask someone to be friends
 //   POST /api/friend/respond     -> accept or decline a request
@@ -89,12 +97,12 @@ const APP_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Recipe Box" />
+<meta name="apple-mobile-web-app-title" content="Kindred Cupboard" />
 <meta name="theme-color" content="#f2ede1" />
 <link rel="apple-touch-icon" href="/icon.png" />
 <link rel="icon" href="/icon.png" />
 <link rel="manifest" href="/manifest.webmanifest" />
-<title>Recipe Box</title>
+<title>Kindred Cupboard</title>
 <style>
 :root{
   --bg:#f2ede1; --card:#ffffff; --card-alt:#faf6ee;
@@ -288,6 +296,8 @@ html.doc-scroll #app{ overflow-x:clip; }
 
 /* recipe grid / cards */
 .grid-recipes{ display:grid; grid-template-columns:repeat(auto-fill,minmax(225px,1fr)); gap:14px; }
+.load-more{ display:flex; flex-direction:column; align-items:center; gap:6px; padding:22px 0 6px; }
+.load-more-count{ margin:0; font-size:12.5px; color:var(--ink-muted); }
 .rcard{ text-align:left; background:#fff; border:1px solid var(--border-light); border-radius:13px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:border-color .15s, box-shadow .15s; }
 .rcard:hover{ border-color:var(--accent); box-shadow:0 3px 12px rgba(0,0,0,.06); }
 .rcard h3{ font-size:18px; margin:0; line-height:1.28; }
@@ -314,6 +324,15 @@ html.doc-scroll #app{ overflow-x:clip; }
 
 /* detail */
 .detail-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:20px 0 14px; }
+/* Cook mode, Share and Edit share the right-hand corner. Share is icon-only
+   because the glyph carries itself; Cook mode is labelled because a flame on
+   its own would be a guess. */
+.detail-top-actions{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.cook-btn.on{ color:var(--accent); border-color:var(--accent); background:rgba(143,45,36,.14); }
+/* A private recipe has no link to hand out. The button stays where it is and
+   greys rather than vanishing, so the corner does not reshuffle between one
+   recipe and the next. */
+.icon-btn[disabled]{ opacity:.35; cursor:default; pointer-events:none; }
 /* Three things in a space-between row would spread the two controls to
    either end of it. They belong together, so they travel together. */
 .detail-tools{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
@@ -328,6 +347,7 @@ html.doc-scroll #app{ overflow-x:clip; }
   padding-left:16px; padding-right:16px; }
 .back-link{ display:inline-flex; align-items:center; gap:3px; color:var(--ink-muted); background:none; border:none; font-size:14px; cursor:pointer; padding:4px 0; }
 .detail-title{ font-size:29px; margin:0 0 6px; line-height:1.15; }
+.detail-desc{ margin:0 0 8px; color:var(--ink-muted); font-size:14px; line-height:1.45; }
 .detail-desc{ color:var(--ink-muted); margin:0 0 10px; font-size:15px; }
 .detail-meta{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:22px; }
 .dot{ color:var(--border); }
@@ -368,6 +388,11 @@ html.doc-scroll #app{ overflow-x:clip; }
 .notes-box{ background:var(--card-alt); border:1px solid var(--border-light); border-radius:11px; padding:14px; font-size:14px; color:var(--ink-muted); margin-bottom:26px; }
 .notes-box b{ color:var(--ink); }
 
+.rate-section{ border-top:1px solid var(--border-light); padding-top:16px; margin-top:18px; }
+.rate-row{ display:flex; align-items:center; gap:2px; flex-wrap:wrap; }
+.rate-row .rate-star{ padding:3px; display:inline-flex; }
+.rate-row .btn{ margin-left:10px; }
+.body-loading{ padding:22px 0; }
 .log-section{ border-top:1px solid var(--border-light); padding-top:18px; }
 .log-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
 .log-header h2{ font-size:16.5px; margin:0; }
@@ -426,6 +451,22 @@ html.doc-scroll #app{ overflow-x:clip; }
 .welcome-wrap{ max-width:440px; margin:0 auto; padding:44px 18px 80px; }
 .welcome-wrap h1{ font-size:30px; margin:14px 0 6px; }
 .welcome-wrap .lede{ font-size:14.5px; color:var(--ink-muted); margin:0 0 22px; line-height:1.5; }
+.brand-row{ display:flex; align-items:center; gap:10px; }
+.brand-row h1{ margin:0; }
+.gate{ display:flex; flex-direction:column; gap:10px; margin-top:4px; }
+.gate-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:14px 15px; border-radius:11px; border:1px solid var(--border); background:var(--card);
+  font-size:16px; font-weight:600; color:inherit; cursor:pointer; font-family:inherit; }
+.gate-btn.open{ border-color:var(--accent); color:var(--accent); }
+.gate-panel{ border:1px solid var(--border-light); border-radius:11px; padding:14px;
+  background:var(--card-alt); margin-top:-4px; }
+.lbl-row{ display:flex; align-items:center; gap:6px; }
+.info-dot{ background:none; border:0; padding:0; margin:0; line-height:0; color:var(--ink-muted);
+  display:inline-flex; cursor:pointer; }
+.info-note{ font-size:12.5px; line-height:1.5; color:var(--ink-muted); background:var(--card);
+  border:1px solid var(--border-light); border-radius:8px; padding:9px 10px; margin:6px 0 0; }
+.check-row{ display:flex; align-items:flex-start; gap:9px; padding:8px 0; font-size:14px; line-height:1.45; }
+.check-row input{ margin-top:2px; flex:none; }
 .warn-box{ background:#fdf4e4; border:1px solid #e6cf9a; color:#6b4a10; font-size:12.5px; line-height:1.55; padding:11px 12px; border-radius:9px; margin:0 0 16px; }
 .warn-box b{ color:#4d340a; }
 .code-box{ font-size:17px; letter-spacing:.1em; background:var(--card-alt); border:1px solid var(--border-light); border-radius:9px; padding:13px; text-align:center; margin-bottom:10px; word-break:break-all; }
@@ -1152,6 +1193,13 @@ const ICONS = {
   qr: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><line x1="14" y1="14" x2="14" y2="14.01"/><line x1="18" y1="14" x2="21" y2="14"/><line x1="14" y1="18" x2="14" y2="21"/><line x1="18" y1="18" x2="18" y2="21"/><line x1="21" y1="18" x2="21" y2="21"/>',
   bell: '<path d="M18 15V10a6 6 0 0 0-12 0v5l-2 3h16z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/>',
   share: '<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><line x1="8.3" y1="10.8" x2="15.7" y2="6.2"/><line x1="8.3" y1="13.2" x2="15.7" y2="17.8"/>',
+  /* The one everybody knows from a phone: a tray open at the top with an
+     arrow leaving it. Kept apart from the share glyph above, which Share App
+     button still uses. */
+  shareIos: '<path d="M8.5 10.5H6A1.8 1.8 0 0 0 4.2 12.3v7A1.8 1.8 0 0 0 6 21.1h12a1.8 1.8 0 0 0 1.8-1.8v-7a1.8 1.8 0 0 0-1.8-1.8h-2.5"/><line x1="12" y1="2.9" x2="12" y2="14.6"/><polyline points="8.4 6.4 12 2.9 15.6 6.4"/>',
+  /* Cook mode. A flame reads as "this is the cooking one" at 16px where a
+     screen or a lightbulb reads as settings. */
+  flame: '<path d="M12 2.8c.5 2.9 2 4.1 3.2 5.6a6.6 6.6 0 0 1 1.6 4.3 4.8 4.8 0 0 1-9.6 0c0-1.5.6-2.8 1.5-3.7.3 1 .8 1.7 1.5 2.1.3-3-.3-5.5 1.8-8.3z"/>',
   inbox: '<path d="M3 12h4l2 3h6l2-3h4"/><path d="M5 5h14l2 7v7H3v-7z"/>',
   /* The three tabs along the foot. A scroll for the recipes, a month grid for
      the calendar, three boxes with the first ticked for the shopping. Drawn
@@ -1351,14 +1399,8 @@ function buildImportPrompt(mode, payload) {
     .replace("{{TAIL}}", src.tail) + (IMPORT_CARRIES_PAYLOAD[mode] ? (payload || "") : "");
 }
 
-const COOKBOOK_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-function randomCookbookId() {
-  const bytes = new Uint8Array(10);
-  (window.crypto || window.msCrypto).getRandomValues(bytes);
-  let s = "";
-  for (let i = 0; i < 10; i++) s += COOKBOOK_ALPHABET[bytes[i] % COOKBOOK_ALPHABET.length];
-  return s;
-}
+/* Cookbook IDs are issued by the server now, so there is nothing here to
+   invent one with. */
 
 /* ====================================================================== */
 /* State                                                                   */
@@ -1368,8 +1410,26 @@ const state = {
   loading: true,
   view: "library",
   activeId: null,
+  /* Cards, not recipes: a name, a line, its tags and two numbers. Everything
+     else lives in bodies and arrives when a recipe is opened. */
   recipes: [],
-  comments: {},
+  /* recipeId -> the full body, once fetched. Kept for the session so going
+     back into a recipe is instant and re-scaling never asks again. */
+  bodies: {},
+  /* recipeId -> its cook log, fetched alongside the body. */
+  logs: {},
+  /* Fingerprint of who we are linked to, straight from the last sync. When
+     it moves, every cached log is suspect - see applyLibrary. */
+  reach: null,
+  /* recipeId -> { avg, count, mine } across every cookbook we can see. */
+  ratings: {},
+  /* recipeId -> { count, ours, last }. ours is what unlocks rating it. */
+  cooks: {},
+  /* Recent cooks by other people on our own recipes; the notifications page
+     is the only thing that reads it. */
+  cookFeed: [],
+  /* Which recipe bodies are in flight, so a second tap does not ask twice. */
+  bodyPending: {},
   mates: [],
   friends: [],
   incoming: [],
@@ -1397,6 +1457,16 @@ const state = {
   friendPrefill: "",
   pickSearch: "",
   sort: "newest",
+  /* How many cards the box is currently drawing. The whole library is always
+     in memory - search, tags, the shopping list and the calendar picker all
+     read every recipe - but only this many are turned into markup at a time.
+     Typing a letter rebuilds the results block from scratch, so at six
+     hundred recipes that was six hundred card templates per keystroke on an
+     iPad. _shownKey is the filter the count belongs to: change the search,
+     the tags, the household or the sort and it no longer matches, which is
+     what puts a fresh search back at the top of its own results. */
+  shown: 0,
+  _shownKey: null,
   scale: 1,
   customScaleOpen: false,
   editDraft: null,
@@ -1410,8 +1480,22 @@ const state = {
   lockedInfo: null,
   modal: null,
   modalError: "",
+  /* The welcome screen, held in state rather than in the DOM: opening an
+     info note or ticking the household box redraws the panel, and the fields
+     have to survive that. _wPass never leaves memory. */
+  _wMode: "",
+  _wName: "",
+  _wEmail: "",
+  _wEmail2: "",
+  _wPass: "",
+  _wLoginEmail: "",
+  _wLoginPass: "",
+  _wCookbook: "",
+  _wJoin: false,
+  _wSave: true,
+  _wInfo: {},
+  _wBusy: false,
   intent: null,
-  logRating: 0,
   importParsed: [],
   importErrors: [],
   importVisibility: "",
@@ -1430,6 +1514,8 @@ const state = {
   groceryItems: {},
   activeListId: null,
   scheduleDraft: null,
+  cookMode: false,
+  shareId: null,
   scheduledFor: null,
   groceryRange: { start: "", end: "" },
   groceryMergeFrom: null,
@@ -1527,8 +1613,9 @@ function uniqueListLabel(base, lists) {
   return base;
 }
 
-function getActiveRecipe() { return state.recipes.find(r => r.recipeId === state.activeId) || null; }
-function recipeById(id) { return state.recipes.find(r => r.recipeId === id) || null; }
+function summaryById(id) { return state.recipes.find(r => r.recipeId === id) || null; }
+function getActiveRecipe() { return withBody(summaryById(state.activeId)); }
+function recipeById(id) { return withBody(summaryById(id)); }
 function entryById(id) { return state.schedule.find(e => e.entryId === id) || null; }
 function scheduleOn(key) { return state.schedule.filter(e => e.date === key); }
 /* The Sun-Sat week that today falls in, not the week the grid happens to be
@@ -1659,6 +1746,17 @@ function excludedByStaples(name, exclusions) {
   return false;
 }
 
+/* Every recipe booked in a date range. The shopping list is built out of
+   their ingredients, and ingredients live in bodies, so this is what the
+   builder fetches before it starts adding anything up. */
+function scheduledRecipeIds(start, end) {
+  const ids = [];
+  state.schedule.forEach(function (e) {
+    if (!e.date || e.date < start || e.date > end) return;
+    if (e.recipeId && ids.indexOf(e.recipeId) < 0) ids.push(e.recipeId);
+  });
+  return ids;
+}
 function buildGroceryItems(start, end) {
   const byName = {}, order = [];
   state.schedule.forEach(function (e) {
@@ -1855,11 +1953,38 @@ function nextGroceryId(items) {
   while (taken["u" + n]) n++;
   return "u" + n;
 }
-function commentsFor(id) { return state.comments[id] || []; }
+/* The cook log for one recipe, which only exists once that recipe has been
+   opened. Everywhere else works from the totals below. */
+function commentsFor(id) { return state.logs[id] || []; }
+/* What a card and a recipe header both need. avg and count are the rating -
+   an average across cookbooks and how many of them voted - and cooks is a
+   separate number entirely: how many times the thing has been made. mine is
+   this cookbook's own rating, 0 for none, and ourCooks is what decides
+   whether it is allowed to have one yet. */
 function statsFor(id) {
-  const list = commentsFor(id);
-  if (!list.length) return { count: 0, avg: null };
-  return { count: list.length, avg: list.reduce((a, c) => a + (c.rating || 0), 0) / list.length };
+  const r = state.ratings[id] || {};
+  const c = state.cooks[id] || {};
+  return {
+    avg: (r.count ? r.avg : null),
+    count: r.count || 0,
+    mine: r.mine || 0,
+    cooks: c.count || 0,
+    ourCooks: c.ours || 0,
+    lastCooked: c.last || null
+  };
+}
+/* A body is either cached or it is not; there is no half-loaded recipe. The
+   test is the presence of an ingredients array rather than a lookup in the
+   cache, because a recipe opened from a share link never goes through the
+   cache at all and still has to render. */
+function hasBody(r) { return !!r && Array.isArray(r.ingredients); }
+/* A card, with its body laid underneath if we have one. The summary wins on
+   every field they share, so a title edited elsewhere is not masked by a
+   stale cached body. */
+function withBody(sum) {
+  if (!sum) return null;
+  const b = state.bodies[sum.recipeId];
+  return b ? Object.assign({}, b, sum) : sum;
 }
 
 function toast(msg) {
@@ -1906,16 +2031,61 @@ function takeStashedIntent() {
   } catch (e) { return null; }
 }
 
-const SESSION_KEY = "recipeBoxSession";
+const SESSION_KEY = "kindredCupboardSession";
+/* Where the token lives is the whole of what the tick box decides. Ticked,
+   it goes in localStorage and survives the app being closed; unticked, it
+   goes in sessionStorage and does not. Reading looks in both, because the
+   preference can change between one sign-in and the next. */
 function loadSession() {
-  try { const raw = localStorage.getItem(SESSION_KEY); return raw ? JSON.parse(raw) : null; }
-  catch (e) { return null; }
+  const raw = (function () {
+    try { const a = localStorage.getItem(SESSION_KEY); if (a) return a; } catch (e) {}
+    try { const b = sessionStorage.getItem(SESSION_KEY); if (b) return b; } catch (e) {}
+    return null;
+  })();
+  if (!raw) return null;
+  try {
+    const s = JSON.parse(raw);
+    /* Anything from before sign-in became an account is not a session any
+       more, whatever it says. */
+    return s && s.token ? s : null;
+  } catch (e) { return null; }
 }
-function saveSession(s) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {} }
-function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch (e) {} }
+function saveSession(s) {
+  const raw = JSON.stringify(s);
+  try {
+    if (s && s.persist) { localStorage.setItem(SESSION_KEY, raw); sessionStorage.removeItem(SESSION_KEY); }
+    else { sessionStorage.setItem(SESSION_KEY, raw); localStorage.removeItem(SESSION_KEY); }
+  } catch (e) {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+}
+
+/* The expensive half of the password hash, and the only place the plaintext
+   is ever handled. The salt is the address rather than a random string kept
+   on the server, so signing in never has to ask who you are before it can
+   ask for the password - which would be a way of finding out which addresses
+   have accounts on them. 100,000 rounds is the ceiling Cloudflare allows and
+   costs a few hundred milliseconds here, where there is no CPU budget to
+   blow. What leaves the device is the result; the password does not. */
+async function derivePasswordKey(email, password) {
+  const enc = new TextEncoder();
+  const saltBuf = await crypto.subtle.digest(
+    "SHA-256", enc.encode("kindredcupboard:" + String(email || "").trim().toLowerCase()));
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(String(password == null ? "" : password)), { name: "PBKDF2" }, false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: new Uint8Array(saltBuf), iterations: 100000, hash: "SHA-256" }, key, 256);
+  const bytes = new Uint8Array(bits);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
+  return out;
+}
+const SUPPORT_EMAIL = "kindredcupboard@gmail.com";
 
 async function API(path, payload) {
-  const creds = state.session ? { username: state.session.username, cookbookId: state.session.cookbookId } : {};
+  const creds = (state.session && state.session.token) ? { token: state.session.token } : {};
   const res = await fetch("/api/" + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1938,16 +2108,46 @@ async function API(path, payload) {
 }
 
 function applyLibrary(data) {
-  state.recipes = (data.recipes || []).map(row => Object.assign({}, normalizeBody(row.data), {
+  state.recipes = (data.recipes || []).map(row => ({
     recipeId: row.recipeId,
     owner: row.owner,
     household: row.household || row.owner,
     ours: !!row.ours,
     visibility: row.visibility,
+    title: row.title || "Untitled recipe",
+    description: row.description || "",
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    /* One flat lowercase string of every ingredient name, which is all the
+       search box ever did with them. */
+    ingNames: row.ingNames || "",
     createdAt: row.createdAt,
-    updatedAt: row.updatedAt
+    updatedAt: row.updatedAt,
+    updatedBy: row.updatedBy || row.owner
   }));
-  state.comments = data.comments || {};
+  state.ratings = data.ratings || {};
+  state.cooks = data.cooks || {};
+  state.cookFeed = data.cookFeed || [];
+  /* A body cached before somebody else saved over it is no longer that
+     recipe. Dropping it here is what makes the cache safe to keep for the
+     whole session: every sync re-checks it against the version on the shelf. */
+  /* A reach change is the one thing that check cannot catch. Befriending a
+     household does not touch updated_at on any of its recipes, but it does
+     change what their cook logs are allowed to contain - so on a stamp move
+     the whole cache goes, rather than only the recipes that were edited. */
+  const nextReach = data.reach || null;
+  if (state.reach !== null && nextReach !== state.reach) {
+    state.bodies = {};
+    state.logs = {};
+  }
+  state.reach = nextReach;
+  const live = {};
+  state.recipes.forEach(function (r) { live[r.recipeId] = r.updatedAt; });
+  Object.keys(state.bodies).forEach(function (id) {
+    if (!(id in live) || live[id] !== state.bodies[id]._at) {
+      delete state.bodies[id];
+      delete state.logs[id];
+    }
+  });
   state.myHousehold = (data.me && data.me.household) || state.session.username;
   state.marks = data.marks || { pin: [], star: [], later: [] };
   state.shares = data.shares || {};
@@ -1975,33 +2175,153 @@ async function refreshLibrary(showLoading) {
   }
 }
 
+/* ---- fetching the parts a card left behind -----------------------------
+   One recipe at a time when somebody opens one, in batches when a shopping
+   list or an export needs a lot at once. Both write into the same cache, and
+   both are safe to call on something already cached: that is the ordinary
+   case, and it costs nothing. */
+function cacheBody(recipeId, data, updatedAt) {
+  const b = normalizeBody(data);
+  b._at = updatedAt || null;
+  state.bodies[recipeId] = b;
+  return b;
+}
+async function ensureBody(recipeId) {
+  if (!recipeId || !state.session) return null;
+  if (state.bodies[recipeId]) return state.bodies[recipeId];
+  /* Already asked for. Waiting on the same promise rather than firing a
+     second request is what stops a double tap costing two round trips. */
+  if (state.bodyPending[recipeId]) return state.bodyPending[recipeId];
+  const p = (async function () {
+    try {
+      const res = await API("recipe/body", { recipeId: recipeId });
+      state.logs[recipeId] = res.log || [];
+      return cacheBody(recipeId, res.data, res.updatedAt);
+    } catch (e) {
+      if (e.code !== "AUTH") toast("Couldn't open that recipe — " + e.message);
+      return null;
+    } finally {
+      delete state.bodyPending[recipeId];
+    }
+  })();
+  state.bodyPending[recipeId] = p;
+  return p;
+}
+/* The server answers at most BODY_BATCH at a time, so a long list is walked
+   in slices rather than asked for in one impossible request. */
+const BODY_BATCH = 40;
+async function ensureBodies(ids) {
+  const want = [];
+  (ids || []).forEach(function (id) {
+    if (id && !state.bodies[id] && want.indexOf(id) < 0) want.push(id);
+  });
+  if (!want.length) return;
+  for (let i = 0; i < want.length; i += BODY_BATCH) {
+    const slice = want.slice(i, i + BODY_BATCH);
+    let res;
+    try { res = await API("recipe/bodies", { recipeIds: slice }); }
+    catch (e) { if (e.code !== "AUTH") toast("Couldn't load those recipes — " + e.message); return; }
+    (res.bodies || []).forEach(function (row) {
+      cacheBody(row.recipeId, row.data, row.updatedAt);
+    });
+  }
+}
+/* Opening a recipe draws the name, the description and the tags immediately
+   and fills the rest in underneath. The flag is what the body area reads to
+   decide between a quiet line of text and the food. */
+async function loadBodyInto(recipeId, after) {
+  await ensureBody(recipeId);
+  if (state.activeId !== recipeId) return;
+  if (typeof after === "function") after();
+  updateRecipeBody();
+}
+
 /* ====================================================================== */
 /* Render: Welcome                                                         */
 /* ====================================================================== */
+const INFO_NAME = "Shown to your friends when you add a recipe, add a friend, or comment on a recipe.";
+const INFO_EMAIL = "Never shared outside the app, or with anyone else using it. It is used only to sign you in, to recover your account, and for critical messages from Kindred Cupboard.";
+function infoDot(key) {
+  return '<button class="info-dot" title="What this is for" onclick="Actions.wInfo(\\'' + key + '\\')">' +
+    icon("info", 15) + '</button>';
+}
+function infoNote(key, text) {
+  return (state._wInfo && state._wInfo[key]) ? '<p class="info-note">' + esc(text) + '</p>' : "";
+}
+function gateButtonHTML(key, label) {
+  const open = state._wMode === key;
+  return '<button class="gate-btn' + (open ? " open" : "") + '" onclick="Actions.wMode(\\'' + key + '\\')">' +
+    '<span>' + label + '</span>' + icon(open ? "chevronUp" : "chevronDown", 18) + '</button>';
+}
+function saveBoxHTML(id) {
+  return '<label class="check-row"><input type="checkbox" id="' + id + '"' +
+    (state._wSave ? " checked" : "") + ' />' +
+    '<span>Save my sign-in on this device, so I stay signed in.</span></label>';
+}
+function newUserPanelHTML() {
+  return '<div class="gate-panel">' +
+    '<div class="field"><label class="lbl-row">Name' + infoDot("name") + '</label>' +
+      '<input type="text" id="w-name" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wName || "") + '" />' +
+      infoNote("name", INFO_NAME) +
+    '</div>' +
+    '<div class="field"><label class="lbl-row">Email' + infoDot("email") + '</label>' +
+      '<input type="email" id="w-email" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wEmail || "") + '" />' +
+      infoNote("email", INFO_EMAIL) +
+    '</div>' +
+    '<div class="field"><label>Confirm email</label>' +
+      '<input type="email" id="w-email2" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wEmail2 || "") + '" />' +
+    '</div>' +
+    '<div class="field"><label>Password</label>' +
+      '<input type="password" id="w-pass" autocomplete="new-password" value="' + esc(state._wPass || "") + '" />' +
+      '<p class="helper-text">At least 8 characters. It is scrambled on this device before it is sent, so nobody else ever sees it.</p>' +
+    '</div>' +
+    saveBoxHTML("w-save") +
+    '<label class="check-row"><input type="checkbox" id="w-join"' + (state._wJoin ? " checked" : "") +
+      ' onchange="Actions.wToggleJoin()" />' +
+      '<span>Join a household cookbook I have been given the ID for.</span></label>' +
+    (state._wJoin
+      ? '<div class="field"><label>Cookbook ID</label>' +
+          '<input type="text" id="w-cookbook" class="font-mono" style="text-transform:uppercase" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(state._wCookbook || "") + '" />' +
+          '<p class="helper-text">Ten letters and numbers, from whoever you share a kitchen with. A cookbook holds two people; anyone else you cook with is a friend instead.</p>' +
+        '</div>'
+      : "") +
+    '<button class="btn btn-primary btn-block" ' + (state._wBusy ? "disabled" : "") +
+      ' onclick="Actions.signUp()">' + (state._wBusy ? "Working…" : "Create my account") + '</button>' +
+  '</div>';
+}
+function existingUserPanelHTML() {
+  return '<div class="gate-panel">' +
+    '<div class="field"><label class="lbl-row">Email' + infoDot("lemail") + '</label>' +
+      '<input type="email" id="w-lemail" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wLoginEmail || "") + '" />' +
+      infoNote("lemail", INFO_EMAIL) +
+    '</div>' +
+    '<div class="field"><label>Password</label>' +
+      '<input type="password" id="w-lpass" autocomplete="current-password" value="' + esc(state._wLoginPass || "") + '" />' +
+    '</div>' +
+    saveBoxHTML("w-lsave") +
+    '<button class="btn btn-primary btn-block" ' + (state._wBusy ? "disabled" : "") +
+      ' onclick="Actions.signIn()">' + (state._wBusy ? "Working…" : "Sign in") + '</button>' +
+    '<p class="helper-text" style="margin-top:12px">Forgotten your password? Write to ' + SUPPORT_EMAIL +
+      ' from the address on your account and we will send you a temporary one.</p>' +
+    '<p class="helper-text">Had a cookbook here before there were passwords? Choose <b>New User</b>, tick the household box, and enter your old name and Cookbook ID to carry it over.</p>' +
+  '</div>';
+}
 function WelcomeViewHTML() {
-  const suggested = state._suggestedCookbook || (state._suggestedCookbook = randomCookbookId());
   return '' +
     '<div class="welcome-wrap">' +
-      '<span style="color:var(--accent)">' + icon("book", 34) + '</span>' +
-      '<h1 class="font-display">The Recipe Box</h1>' +
-      '<p class="lede">Pick a name your friends will see on your ratings and comments, then start a cookbook — or enter an existing Cookbook ID to open it on this device or join a household cookbook.</p>' +
+      '<div class="brand-row"><span style="color:var(--accent)">' + icon("book", 32) + '</span>' +
+        '<h1 class="font-display">Kindred Cupboard</h1></div>' +
+      '<p class="lede">Break bread together. Store and share recipes together. Craft meals together. Kindred Cupboard makes it easy.</p>' +
       (state._arrivedByScan
-        ? '<div class="import-summary">Someone shared something with you. Set up a cookbook here and it will pick up where the code left off.</div>'
+        ? '<div class="import-summary">Someone shared something with you. Set up an account here and it will pick up where the code left off.</div>'
         : "") +
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
-      '<div class="field"><label>Username</label>' +
-        '<input type="text" id="w-username" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wUsername || "") + '" />' +
+      '<div class="gate">' +
+        gateButtonHTML("new", "New User") +
+        (state._wMode === "new" ? newUserPanelHTML() : "") +
+        gateButtonHTML("existing", "Existing User") +
+        (state._wMode === "existing" ? existingUserPanelHTML() : "") +
       '</div>' +
-      '<div class="field"><label>Cookbook ID</label>' +
-        '<input type="text" id="w-cookbook" class="font-mono code-box" style="text-transform:uppercase" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(state._wCookbook !== undefined ? state._wCookbook : suggested) + '" />' +
-        '<div style="display:flex; gap:8px">' +
-          '<button class="btn btn-sm" onclick="Actions.regenerateCookbook()">' + icon("sync", 14) + ' New ID</button>' +
-          '<button class="btn btn-sm" onclick="Actions.copyCookbookField()">' + icon("copy", 14) + ' Copy</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="warn-box"><b>Your Cookbook ID is your password.</b> Anyone who has it can read, edit and delete every recipe in the cookbook, and is linked to all of its friends. Share it only with people you cook with, or to open the same cookbook on another one of your devices. It cannot be reset or recovered, so save it somewhere safe.</div>' +
-      '<button class="btn btn-primary btn-block" onclick="Actions.submitSession()">Open my recipe box</button>' +
-      '<p class="helper-text" style="margin-top:14px">Coming back? Use the same username and Cookbook ID as before. Sharing a kitchen? Use your own username with the household\\'s Cookbook ID.</p>' +
     '</div>';
 }
 
@@ -2009,17 +2329,12 @@ function WelcomeViewHTML() {
 /* Render: Library                                                         */
 /* ====================================================================== */
 function ratingHTML(avg, count) {
-  if (avg == null) return '<span class="no-rating">Not yet cooked</span>';
+  if (avg == null) return '<span class="no-rating">Not yet rated</span>';
   const rounded = Math.round(avg);
   let stars = "";
   for (let n = 1; n <= 5; n++) stars += icon("star", 14, n <= rounded ? "star-filled" : "star-empty");
   return '<span class="stars"><span style="display:inline-flex">' + stars + '</span>' +
     '<span class="font-mono">' + avg.toFixed(1) + '</span><span>(' + count + ')</span></span>';
-}
-function starsOnly(rating) {
-  let stars = "";
-  for (let n = 1; n <= 5; n++) stars += icon("star", 13, n <= rating ? "star-filled" : "star-empty");
-  return '<span class="stars"><span style="display:inline-flex">' + stars + '</span></span>';
 }
 /* In a shared cookbook, "private" would be a lie: everyone in the cookbook
    can already see and edit it. */
@@ -2356,7 +2671,7 @@ function qrSvgHTML(text, px, label) {
 /* The three things a code can point at. Only the app link is anonymous; the
    other two name something, so they are built where they are shown rather
    than kept anywhere. */
-function appQrHTML(px) { return qrSvgHTML(appUrl(), px, "QR code linking to The Recipe Box"); }
+function appQrHTML(px) { return qrSvgHTML(appUrl(), px, "QR code linking to Kindred Cupboard"); }
 function recipeQrUrl(recipeId) { return appUrl() + "?r=" + encodeURIComponent(recipeId); }
 function recipeQrHTML(recipeId, px) {
   return qrSvgHTML(recipeQrUrl(recipeId), px, "QR code linking to this recipe");
@@ -2488,16 +2803,17 @@ function rawNotifications() {
     });
   });
 
-  Object.keys(state.comments).forEach(function (rid) {
-    const mine = ours[rid];
-    if (!mine) return;                       /* only cooks of our own recipes */
-    commentsFor(rid).forEach(function (c) {
-      if (String(c.username).toLowerCase() === meLc) return;   /* our own log */
-      out.push({
-        id: "cook:" + c.commentId, kind: "cook", at: c.createdAt || c.cookedOn,
-        who: c.username, title: mine.title, recipeId: rid,
-        rating: c.rating, comment: c.comment, cookedOn: c.cookedOn
-      });
+  /* Cooks by somebody else on a recipe of ours. This used to be sifted out
+     of every comment in the library; now the server sends the recent ones
+     and nothing else, because that is all this page ever showed. */
+  state.cookFeed.forEach(function (c) {
+    const mine = ours[c.recipeId];
+    if (!mine) return;
+    if (String(c.username).toLowerCase() === meLc) return;   /* our own log */
+    out.push({
+      id: "cook:" + c.commentId, kind: "cook", at: c.createdAt || c.cookedOn,
+      who: c.username, title: mine.title, recipeId: c.recipeId,
+      comment: c.comment, cookedOn: c.cookedOn
     });
   });
   return out;
@@ -2606,7 +2922,7 @@ function visibilityPill(r, clickable) {
 
 function RecipeCardHTML(r) {
   const st = statsFor(r.recipeId);
-  const tags = r.tags.slice(0, 3).map(t => '<span class="tag">' + esc(t) + '</span>').join("");
+  const tags = (r.tags || []).slice(0, 3).map(t => '<span class="tag">' + esc(t) + '</span>').join("");
   const badge = r.ours
     ? ((r.owner === state.session.username) ? "" : '<span class="owner-badge">' + esc(r.owner) + '</span>')
     : '<span class="owner-badge">' + esc(r.household) + '</span>';
@@ -2616,7 +2932,7 @@ function RecipeCardHTML(r) {
       (r.description ? '<p class="desc">' + esc(r.description) + '</p>' : "") +
       '<div class="tag-row">' + badge + tags + '</div>' +
       '<div class="card-foot">' + ratingHTML(st.avg, st.count) +
-        (st.count ? '<span class="cooked-count">· cooked ' + st.count + '×</span>' : "") +
+        (st.cooks ? '<span class="cooked-count">· cooked ' + st.cooks + '×</span>' : "") +
         '<span class="mark-row">' + MarkButtonsHTML(r, false) + ScheduleMarkHTML(r, false) + '</span>' +
       '</div>' +
     '</div>';
@@ -2686,7 +3002,7 @@ function filteredRecipes() {
   const list = ownerFiltered().filter(r => {
     if (!matchesTags(r)) return false;
     if (!q) return true;
-    const hay = [r.title, r.description, r.owner, r.household].concat(r.tags, r.ingredients.map(i => i.name)).join(" ").toLowerCase();
+    const hay = [r.title, r.description, r.owner, r.household, r.ingNames].concat(r.tags || []).join(" ").toLowerCase();
     return hay.includes(q);
   });
   return sortRecipes(list);
@@ -2712,7 +3028,24 @@ function hasActiveFilter() {
   return !!(state.search.trim() || state.activeTags.length || state.ownerFilter !== "all");
 }
 
+/* One screenful of scrolling, near enough. Small enough that a keystroke is
+   cheap and large enough that most boxes never see the button. */
+const PAGE_SIZE = 50;
+function resultsKey() {
+  return [state.search.trim().toLowerCase(), state.ownerFilter, state.sort]
+    .concat(state.activeTags.slice().sort()).join("\\u0000");
+}
+/* Called from the one place that draws the results, so every route that
+   narrows the box - the search field, a chip, the filter sheet, the household
+   picker, the sort menu - resets the count without having to remember to. */
+function syncShownCount() {
+  const key = resultsKey();
+  if (key !== state._shownKey) { state._shownKey = key; state.shown = PAGE_SIZE; }
+  if (!state.shown) state.shown = PAGE_SIZE;
+}
+
 function ResultsSectionHTML() {
+  syncShownCount();
   const results = filteredRecipes();
   const picked = state.activeTags.slice().sort(tagOrder);
   const offered = suggestedTags(results, state.activeTags);
@@ -2725,7 +3058,7 @@ function ResultsSectionHTML() {
   let body;
   if (results.length === 0) {
     body = state.recipes.length === 0
-      ? '<div class="empty-state"><p class="title font-display">Your recipe box is empty</p>' +
+      ? '<div class="empty-state"><p class="title font-display">Your cupboard is empty</p>' +
         '<p class="sub">Add your first recipe, import a file, or add a friend to see theirs.</p>' +
         '<div class="empty-actions"><button class="btn btn-primary" onclick="Actions.openNew()">Add a recipe</button>' +
         '<button class="btn" onclick="Actions.openModal(\\'import\\')">Import a file</button></div></div>'
@@ -2736,7 +3069,17 @@ function ResultsSectionHTML() {
             icon("users", 15) + ' Show everyone\\'s recipes</button></div>'
           : "") + '</div>';
   } else {
-    body = '<div class="grid-recipes">' + results.map(RecipeCardHTML).join("") + '</div>';
+    const shown = Math.min(state.shown, results.length);
+    const rest = results.length - shown;
+    body = '<div class="grid-recipes">' +
+      results.slice(0, shown).map(RecipeCardHTML).join("") + '</div>';
+    if (rest > 0) {
+      body += '<div class="load-more">' +
+        '<button class="btn" onclick="Actions.showMore()">Load ' +
+          Math.min(rest, PAGE_SIZE) + ' more</button>' +
+        '<p class="load-more-count">Showing ' + shown + ' of ' + results.length + '</p>' +
+      '</div>';
+    }
   }
   return (state._tagList.length ? '<div class="chips">' + chips + '</div>' : "") + body;
 }
@@ -2751,7 +3094,7 @@ function LibraryViewHTML() {
       '<div class="header">' +
         '<div class="header-brand">' +
           '<img class="app-icon" src="/icon.png" alt="" />' +
-          '<h1 class="font-display">The Recipe Box</h1>' +
+          '<h1 class="font-display">Kindred Cupboard</h1>' +
         '</div>' +
         '<div class="header-row2">' +
           '<p class="header-who"><b>' + esc(state.session.username) + '</b> · ' +
@@ -3260,8 +3603,8 @@ function mealDishMatches(q) {
   const needle = String(q).trim().toLowerCase();
   if (!needle) return [];
   return state.recipes.filter(function (r) {
-    const hay = [r.title, r.description, r.owner, r.household]
-      .concat(r.tags, r.ingredients.map(i => i.name)).join(" ").toLowerCase();
+    const hay = [r.title, r.description, r.owner, r.household, r.ingNames]
+      .concat(r.tags || []).join(" ").toLowerCase();
     return hay.indexOf(needle) >= 0;
   });
 }
@@ -3408,8 +3751,8 @@ function daySearchMatches() {
   const q = state.daySearch.trim().toLowerCase();
   if (!q) return [];
   return state.recipes.filter(function (r) {
-    const hay = [r.title, r.description, r.owner, r.household]
-      .concat(r.tags, r.ingredients.map(i => i.name)).join(" ").toLowerCase();
+    const hay = [r.title, r.description, r.owner, r.household, r.ingNames]
+      .concat(r.tags || []).join(" ").toLowerCase();
     return hay.indexOf(q) >= 0;
   });
 }
@@ -3489,7 +3832,7 @@ function FriendsViewHTML() {
     '<div class="qr-side">' +
       '<div class="qr-holder">' + friendQrHTML(state.session.username, 126) + '</div>' +
       '<div class="qr-side-text">' +
-        '<p class="helper-text" style="margin:0">Opens The Recipe Box, sets them up with a cookbook if they need one, and then asks them to confirm sending <b>' +
+        '<p class="helper-text" style="margin:0">Opens Kindred Cupboard, sets them up with a cookbook if they need one, and then asks them to confirm sending <b>' +
           esc(state.session.username) + '</b> a friend request. You still have to accept it.</p>' +
       '</div>' +
     '</div>' +
@@ -3502,7 +3845,7 @@ function FriendsViewHTML() {
   return '' +
     '<div class="wrap">' +
       '<div class="detail-top">' +
-        '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Recipe box</button>' +
+        '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Cupboard</button>' +
       '</div>' +
       '<h1 class="detail-title font-display" style="font-size:26px">Friends</h1>' +
       '<div class="tabs">' +
@@ -3561,7 +3904,6 @@ function NotificationsPanelHTML() {
       open = openBtn("Open meal");
     } else {
       line = '<b>' + esc(n.who) + '</b> cooked your <b>' + esc(n.title) + '</b>' +
-        (n.rating ? ' ' + starsOnly(n.rating) : "") +
         (n.comment ? '<br><span style="color:var(--ink-muted)">' + esc(n.comment) + '</span>' : "");
       open = openBtn("Open cook log");
     }
@@ -3604,11 +3946,14 @@ function stopWatching() {
 }
 function setWatch(recipeId) {
   if (!recipeId) { state.watch = null; state.change = null; stopWatching(); return; }
-  const r = state.recipes.find(x => x.recipeId === recipeId);
+  const r = summaryById(recipeId);
   state.watch = {
     recipeId,
     updatedAt: r ? r.updatedAt : null,
-    comments: commentsFor(recipeId).length
+    /* The count comes from the library totals rather than from the log,
+       because the log may not have been fetched yet and a null baseline
+       would report the first poll as somebody else's cook. */
+    comments: statsFor(recipeId).cooks
   };
   state.change = null;
   startWatching();
@@ -3661,7 +4006,7 @@ function ChangeBannerHTML() {
   let text, action;
   if (c.kind === "gone") {
     text = "This recipe has been deleted.";
-    action = '<button class="btn btn-sm" onclick="Actions.backToLibrary()">Back to the recipe box</button>';
+    action = '<button class="btn btn-sm" onclick="Actions.backToLibrary()">Back to the cupboard</button>';
   } else if (c.kind === "editing") {
     text = esc(c.who) + " is editing this recipe right now.";
     action = "";
@@ -3691,18 +4036,49 @@ function updateChangeBanner() {
 /* ====================================================================== */
 const SCALE_PRESETS = [0.25, 0.5, 1, 2, 4];
 
+/* One rating per cookbook, and only once that cookbook has actually made the
+   thing. A verdict from a kitchen that has never cooked it is not a verdict,
+   so the stars stay inert with a line saying what would wake them up. */
+function RatingControlHTML(r) {
+  const st = statsFor(r.recipeId);
+  const allowed = st.ourCooks > 0;
+  let stars = "";
+  for (let n = 1; n <= 5; n++) {
+    const filled = n <= st.mine ? "star-filled" : "star-empty";
+    stars += allowed
+      ? '<button type="button" class="icon-btn rate-star" title="' + n + ' star' + (n === 1 ? "" : "s") + '" ' +
+        'onclick="Actions.setRating(' + n + ')">' + icon("star", 26, filled) + '</button>'
+      : '<span class="rate-star">' + icon("star", 26, "star-empty") + '</span>';
+  }
+  const clear = (allowed && st.mine)
+    ? '<button class="btn btn-sm btn-ghost" onclick="Actions.setRating(0)">Clear</button>' : "";
+  const note = !allowed
+    ? 'Log a cook and you can rate this one.'
+    : (st.mine
+        ? 'Your cookbook rates this ' + st.mine + ' out of 5. Tap to change it.'
+        : 'Tap a star to rate this for your cookbook.');
+  return '<div class="rate-section">' +
+      '<div class="rate-row">' + stars + clear + '</div>' +
+      '<p class="helper-text">' + note + '</p>' +
+    '</div>';
+}
+
 function CookLogHTML(r) {
+  const st = statsFor(r.recipeId);
+  const ready = !!state.logs[r.recipeId] || hasBody(r);
   const list = commentsFor(r.recipeId).slice().sort((a, b) => String(b.cookedOn).localeCompare(String(a.cookedOn)));
   const shown = state._showAllLogs ? list : list.slice(0, 4);
   const me = state.session.username.toLowerCase();
-  const items = list.length === 0
+  const items = !ready
+    ? '<p class="no-rating">Loading the cook log…</p>'
+    : list.length === 0
     ? '<p class="no-rating">Not cooked yet — log it after your first time through.</p>'
     : '<ul style="list-style:none;margin:0;padding:0">' + shown.map(c =>
         '<li class="log-item"><div style="min-width:0">' +
           '<div class="log-user">' + esc(c.username) + '</div>' +
           '<div class="log-date">' + esc(fmtDate(c.cookedOn)) + '</div>' +
           (c.comment ? '<p class="log-notes">' + esc(c.comment) + '</p>' : "") +
-        '</div><div class="log-right">' + starsOnly(c.rating) +
+        '</div><div class="log-right">' +
           (c.username.toLowerCase() === me ? '<button class="icon-btn" onclick="Actions.deleteComment(\\'' + c.commentId + '\\')">' + icon("trash", 14) + '</button>' : "") +
         '</div></li>').join("") + '</ul>' +
       (list.length > 4 ? '<button class="show-all-btn" onclick="Actions.toggleShowAllLogs()">' + (state._showAllLogs ? "Show fewer" : "Show all " + list.length) + '</button>' : "");
@@ -3719,6 +4095,7 @@ function CookLogHTML(r) {
       '<div class="log-header"><h2 class="font-display">Cook log</h2>' +
       '<button class="btn btn-primary btn-sm" onclick="Actions.openModal(\\'logCook\\')">' + icon("check", 14) + ' Log this cook</button></div>' +
       '<p class="helper-text">' + audience + '</p>' +
+      (st.cooks ? '<p class="helper-text">Cooked ' + st.cooks + ' time' + (st.cooks === 1 ? "" : "s") + '.</p>' : "") +
       items +
     '</div>';
 }
@@ -3727,6 +4104,13 @@ function CookLogHTML(r) {
    owner's cookbook. Ratings and comments stay between friends, so a recipe
    reached by a bare link shows the food and none of the conversation. */
 function RecipeBodyHTML(r, hideLog) {
+  /* The card's worth of a recipe is on screen already - name, description,
+     tags. This is everything the cupboard tab deliberately does not carry,
+     so on the first render of a recipe there is nothing here yet. */
+  if (!hasBody(r)) {
+    return '<div class="body-loading"><p class="no-rating">Loading the rest of this recipe…</p></div>' +
+      (hideLog ? "" : RatingControlHTML(r) + CookLogHTML(r));
+  }
   const scale = state.scale;
   const scaledServings = Math.round(r.servings.base * scale * 100) / 100;
   const m = r.macrosPerServing || {};
@@ -3784,16 +4168,20 @@ function RecipeBodyHTML(r, hideLog) {
       '</div>' +
     '</div>' +
     (r.notes ? '<div class="notes-box"><b>Notes:</b> ' + esc(r.notes) + '</div>' : "") +
-    (hideLog ? "" : CookLogHTML(r));
+    (hideLog ? "" : RatingControlHTML(r) + CookLogHTML(r));
 }
 
 function DetailViewHTML(r) {
   if (!r) return '<div class="wrap"><p style="padding-top:30px">That recipe is no longer in your box.</p>' +
-    '<button class="btn" onclick="Actions.backToLibrary()">Back to the recipe box</button></div>';
+    '<button class="btn" onclick="Actions.backToLibrary()">Back to the cupboard</button></div>';
   const st = statsFor(r.recipeId);
-  const action = r.ours
-    ? '<button class="btn btn-sm" onclick="Actions.openEdit(\\'' + r.recipeId + '\\')">' + icon("pencil", 14) + ' Edit</button>'
-    : "";
+  const action = '<div class="detail-top-actions">' +
+    CookModeButtonHTML() +
+    ShareButtonHTML(r.recipeId, r.visibility) +
+    (r.ours
+      ? '<button class="btn btn-sm" onclick="Actions.openEdit(\\'' + r.recipeId + '\\')">' + icon("pencil", 14) + ' Edit</button>'
+      : "") +
+    '</div>';
   /* Who and how well it went, straight under the name. Where the recipe came
      from a cookbook we are not linked to - a pin taken from a share link -
      the name is a button that asks to be friends. */
@@ -3806,7 +4194,7 @@ function DetailViewHTML(r) {
           'from ' + esc(r.household) + ' ' + icon("userPlus", 11) + '</button>';
   const creditRow = '<div class="detail-meta" style="margin-bottom:10px">' + credit +
     ratingHTML(st.avg, st.count) +
-    (st.count ? '<span class="cooked-count">cooked ' + st.count + '×</span>' : "") +
+    (st.cooks ? '<span class="cooked-count">cooked ' + st.cooks + '×</span>' : "") +
   '</div>';
   /* Who can see it sits with the other things you can do to the recipe. It
      and Pin are never both there: one is for a recipe of yours, the other
@@ -3822,13 +4210,12 @@ function DetailViewHTML(r) {
   const schedBanner = (sf && sf.recipeId === r.recipeId)
     ? '<div class="sched-banner">' + icon("calGrid", 15) +
         '<span>Scheduled for <b>' + esc(shortDate(sf.date)) + '</b> · <b>' + esc(String(sf.servings)) +
-        '</b> ' + esc(r.servings.unit) + '</span>' +
+        '</b> ' + esc((r.servings && r.servings.unit) || "servings") + '</span>' +
         '<button class="btn btn-sm btn-no" style="margin-left:auto" onclick="Actions.unschedule(\\'' + sf.entryId + '\\')">' +
         icon("x", 13) + ' Unschedule</button>' +
       '</div>'
     : "";
-  const qrBlock = ShareBlockHTML(r.recipeId, r.visibility, r.ours);
-  const tags = r.tags.length
+  const tags = (r.tags || []).length
     ? '<div class="detail-tags">' + r.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join("") + '</div>'
     : "";
   const prov = r.mergedFrom
@@ -3837,16 +4224,20 @@ function DetailViewHTML(r) {
   return '' +
     '<div class="wrap">' +
       '<div class="detail-top">' +
-        '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Recipe box</button>' +
+        '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Cupboard</button>' +
         action +
       '</div>' +
       '<div id="change-banner">' + ChangeBannerHTML() + '</div>' +
       '<h1 class="detail-title font-display">' + esc(r.title) + '</h1>' +
+      /* The card already carried this and the recipe page did not, which was
+         tolerable while the body arrived with the page. Now that the body
+         comes second, it is one of the few things there is to read while the
+         rest is on its way. */
+      (r.description ? '<p class="detail-desc">' + esc(r.description) + '</p>' : "") +
       creditRow +
       schedBanner +
       markRow +
       schedRow +
-      qrBlock +
       tags +
       prov +
       '<div id="recipe-body">' + RecipeBodyHTML(r) + '</div>' +
@@ -4252,15 +4643,10 @@ function modalShell(title, inner) {
 
 function LogCookModalHTML() {
   const r = getActiveRecipe();
-  let stars = "";
-  for (let n = 1; n <= 5; n++) {
-    stars += '<button type="button" class="icon-btn" style="padding:3px" onclick="Actions.setLogRating(' + n + ')">' +
-      icon("star", 28, n <= state.logRating ? "star-filled" : "star-empty") + '</button>';
-  }
   return modalShell("Log this cook",
-    '<p class="helper-text">' + esc(r ? r.title : "") + ' — a rating is required, the comment is up to you.</p>' +
+    '<p class="helper-text">' + esc(r ? r.title : "") + ' — log it as often as you cook it. ' +
+    'The comment is optional, and how your cookbook rates the dish is set on the recipe itself.</p>' +
     '<div class="field"><label>Date cooked</label><input type="date" id="cl-date" value="' + todayStr() + '" /></div>' +
-    '<div class="field"><label>Rating</label><div>' + stars + '</div></div>' +
     '<div class="field"><label>Comment (optional)</label><textarea id="cl-notes" rows="3" placeholder="Kids liked it, a bit salty..."></textarea></div>' +
     '<div class="edit-actions"><button class="btn" onclick="Actions.closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" onclick="Actions.saveCookLog()">Save to cook log</button></div>');
@@ -4340,7 +4726,7 @@ function ScheduleModalHTML() {
   if (!r) return modalShell(editing ? "Edit this booking" : "Schedule this recipe",
     '<p class="helper-text">That recipe is no longer in your box.</p>' +
     '<div class="edit-actions"><button class="btn" onclick="Actions.closeModal()">Close</button></div>');
-  const base = (Number(r.servings.base) > 0) ? Number(r.servings.base) : 1;
+  const base = (r.servings && Number(r.servings.base) > 0) ? Number(r.servings.base) : 1;
   const serv = Number(d.servings) > 0 ? Number(d.servings) : base;
   const f = serv / base;
   const date = d.date || localToday();
@@ -4769,6 +5155,14 @@ function UrlToRecipeModalHTML() {
 
 function AccountModalHTML() {
   return modalShell("Settings",
+    '<div class="field"><label>Email</label>' +
+      '<div class="code-box" style="font-size:14px; letter-spacing:0">' + esc(state.session.email || "—") + '</div>' +
+      '<p class="helper-text">This is what you sign in with. It is never shown to anyone else using the app.</p>' +
+    '</div>' +
+    '<div style="display:flex; gap:8px; margin-bottom:18px">' +
+      '<button class="btn btn-sm" onclick="Actions.openModal(\\'changePassword\\')">' + icon("lock", 14) + ' Change password</button>' +
+      '<button class="btn btn-sm" onclick="Actions.openModal(\\'changeEmail\\')">' + icon("pencil", 14) + ' Change email</button>' +
+    '</div>' +
     '<div class="field"><label>Your name</label>' +
       '<input type="text" id="set-name" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state.session.username) + '" />' +
       '<button class="btn btn-sm btn-block" onclick="Actions.saveUsername()">Save name</button>' +
@@ -4797,8 +5191,53 @@ function AccountModalHTML() {
         '<button class="btn btn-sm btn-primary" onclick="Actions.runRetag(true)">Apply</button>' +
       '</div>' +
       '<div class="adm-out" id="adm-out">Not run yet.</div>' +
+      '<p class="helper-text" style="margin-top:14px">Temporary password. The address and the password are turned into a ' +
+        'hash here, in this browser, before either is sent — the server never sees the password itself. ' +
+        'It signs every one of their devices out.</p>' +
+      '<div class="field"><label>Their email address</label>' +
+        '<input type="email" id="adm-email" autocapitalize="none" autocorrect="off" spellcheck="false" /></div>' +
+      '<div class="field"><label>Temporary password</label>' +
+        '<input type="text" id="adm-temp" autocapitalize="none" autocorrect="off" spellcheck="false" /></div>' +
+      '<button class="btn btn-sm" onclick="Actions.adminSetPassword()">Set temporary password</button>' +
     '</details>' +
     '<button class="btn btn-block" onclick="Actions.signOut()">' + icon("logout", 15) + ' Sign out on this device</button>');
+}
+
+function ChangePasswordModalHTML() {
+  return modalShell("Change password",
+    '<p class="helper-text">Your current password, then the new one twice. Every other device you are signed in on will be signed out.</p>' +
+    '<div class="field"><label>Current password</label>' +
+      '<input type="password" id="cp-current" autocomplete="current-password" /></div>' +
+    '<div class="field"><label>New password</label>' +
+      '<input type="password" id="cp-new" autocomplete="new-password" /></div>' +
+    '<div class="field"><label>New password again</label>' +
+      '<input type="password" id="cp-new2" autocomplete="new-password" /></div>' +
+    '<div class="edit-actions"><button class="btn" onclick="Actions.closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" ' + (state._acctBusy ? "disabled" : "") +
+      ' onclick="Actions.changePassword()">' + (state._acctBusy ? "Working…" : "Change password") + '</button></div>');
+}
+
+function ChangeEmailModalHTML() {
+  return modalShell("Change email",
+    '<p class="helper-text">Your current address, the new one, and your password. Every other device you are signed in on will be signed out.</p>' +
+    '<div class="field"><label>Current email</label>' +
+      '<input type="email" id="ce-current" autocapitalize="none" autocorrect="off" spellcheck="false" /></div>' +
+    '<div class="field"><label>New email</label>' +
+      '<input type="email" id="ce-new" autocapitalize="none" autocorrect="off" spellcheck="false" /></div>' +
+    '<div class="field"><label>Password</label>' +
+      '<input type="password" id="ce-pass" autocomplete="current-password" /></div>' +
+    '<div class="edit-actions"><button class="btn" onclick="Actions.closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" ' + (state._acctBusy ? "disabled" : "") +
+      ' onclick="Actions.changeEmail()">' + (state._acctBusy ? "Working…" : "Change email") + '</button></div>');
+}
+
+function ContactModalHTML() {
+  return modalShell("Contact info",
+    '<p class="helper-text">Questions, bug reports, or a password you cannot get back — write in and we will answer.</p>' +
+    '<div class="code-box" style="font-size:15px; letter-spacing:0">' +
+      '<a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL + '</a></div>' +
+    '<button class="btn btn-block" onclick="Actions.copySupportEmail()">' + icon("copy", 15) + ' Copy address</button>' +
+    '<p class="helper-text" style="margin-top:14px">For a lost password, write from the address on your account. There is no automatic reset — a temporary password is sent back by hand.</p>');
 }
 
 function LockedModalHTML() {
@@ -4918,7 +5357,7 @@ function LinkMarkButtonsHTML(lr, mine) {
 function LinkRecipeViewHTML() {
   const signedIn = !!state.session;
   const back = signedIn
-    ? '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) + ' Recipe box</button>'
+    ? '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) + ' Cupboard</button>'
     : '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) + ' Account Login</button>';
   if (!state.linkRecipe) {
     return '<div class="wrap"><div class="detail-top">' + back + '</div>' +
@@ -4953,12 +5392,14 @@ function LinkRecipeViewHTML() {
     : "";
   return '' +
     '<div class="wrap">' +
-      '<div class="detail-top">' + back + '</div>' +
+      '<div class="detail-top">' + back +
+        '<div class="detail-top-actions">' + CookModeButtonHTML() +
+          ShareButtonHTML(lr.recipeId, lr.visibility) + '</div>' +
+      '</div>' +
       '<h1 class="detail-title font-display">' + esc(r.title) + '</h1>' +
       '<div class="detail-meta" style="margin-bottom:10px">' + credit + '</div>' +
       pinRow +
       joinRow +
-      ShareBlockHTML(lr.recipeId, lr.visibility, false) +
       tags +
       '<div id="recipe-body">' + RecipeBodyHTML(r, true) + '</div>' +
     '</div>';
@@ -4967,23 +5408,55 @@ function LinkRecipeViewHTML() {
 /* Link and code, side by side, carrying the same URL. Private recipes get
    neither: there is nothing to hand out, and offering a code for something
    nobody else can open would only mislead. */
-function ShareBlockHTML(recipeId, visibility, ours) {
-  if (!(visibility === "friends" || visibility === "selective")) {
-    return ours
-      ? '<p class="helper-text" style="margin:14px 0 16px">This one is ' + esc(privateLabel().toLowerCase()) +
-        ', so it has no link or code. Change who can see it to share it.</p>'
-      : "";
-  }
+/* The body of the share frame: the address, a way to copy it, and the code
+   somebody can point a camera at. It used to sit inline in the middle of the
+   recipe, which put a QR code between the reader and the ingredients on every
+   single recipe. Behind a button it is there when it is wanted and out of the
+   way when it is not. */
+function ShareBlockHTML(recipeId) {
   const shareUrl = recipeQrUrl(recipeId);
-  return '<div class="qr-share" style="margin:14px 0 16px">' +
+  return '<div class="qr-share" style="margin:2px 0 4px">' +
       '<div class="qr-side-text">' +
-        '<div class="small-label" style="margin-bottom:5px">Share Recipe</div>' +
         '<div class="code-box font-mono">' + esc(shareUrl) + '</div>' +
         '<button class="btn btn-sm btn-block" onclick="Actions.copyRecipeUrl(\\'' + recipeId + '\\')">' +
           icon("copy", 14) + ' Copy link</button>' +
       '</div>' +
       '<div class="qr-holder">' + recipeQrHTML(recipeId, 112) + '</div>' +
     '</div>';
+}
+
+function ShareRecipeModalHTML() {
+  const id = state.shareId;
+  if (!id) return modalShell("Share Recipe", '<p class="helper-text">Nothing to share.</p>');
+  return modalShell("Share Recipe",
+    '<p class="helper-text">Anyone with this link or code can read the recipe. ' +
+    'What they can do with it beyond reading depends on whether they have a cookbook.</p>' +
+    ShareBlockHTML(id));
+}
+
+/* Only a recipe somebody else could actually reach has a link. Rather than
+   the button coming and going, it greys: a dead Share button says "this one
+   is private" more plainly than a sentence underneath the title did, and the
+   corner keeps the same shape from one recipe to the next. */
+function ShareButtonHTML(recipeId, visibility) {
+  const shareable = visibility === "friends" || visibility === "selective";
+  return '<button class="icon-btn share-btn" title="' +
+    (shareable ? "Share this recipe" : "This recipe is private - change who can see it to share it") + '"' +
+    (shareable ? ' onclick="Actions.openShare(\\'' + recipeId + '\\')"' : " disabled") + '>' +
+    icon("shareIos", 19) + '</button>';
+}
+
+/* Cook mode holds a screen wake lock so a propped-up iPad stops dimming
+   halfway through the method. Where the browser has no such thing there is
+   nothing to offer, so the button is left out rather than drawn dead - unlike
+   Share, which is dead for a reason the reader can act on. */
+function CookModeButtonHTML() {
+  if (!wakeLockSupported()) return "";
+  const on = !!state.cookMode;
+  return '<button class="btn btn-sm cook-btn' + (on ? " on" : "") + '" title="' +
+    (on ? "Cook mode on - the screen will not dim or lock" :
+          "Cook mode - keep the screen awake while you cook") + '" ' +
+    'onclick="Actions.toggleCookMode()">' + icon("flame", 14) + ' <span>Cook</span></button>';
 }
 
 function ActionsModalHTML() {
@@ -4997,6 +5470,7 @@ function ActionsModalHTML() {
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.reload();">' + icon("sync", 16) + ' Reload from server</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\\'shareApp\\');">' + icon("share", 16) + ' Share App</button>' +
       '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\\'account\\');">' + icon("lock", 16) + ' Settings</button>' +
+      '<button class="btn btn-block" onclick="Actions.closeModal(); Actions.openModal(\\'contact\\');">' + icon("info", 16) + ' Contact Info</button>' +
     '</div>');
 }
 
@@ -5112,7 +5586,11 @@ function renderModal() {
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
   else if (state.modal === "account") root.innerHTML = AccountModalHTML();
+  else if (state.modal === "changePassword") root.innerHTML = ChangePasswordModalHTML();
+  else if (state.modal === "changeEmail") root.innerHTML = ChangeEmailModalHTML();
+  else if (state.modal === "contact") root.innerHTML = ContactModalHTML();
   else if (state.modal === "shareApp") root.innerHTML = ShareAppModalHTML();
+  else if (state.modal === "share") root.innerHTML = ShareRecipeModalHTML();
   else if (state.modal === "confirmIntent") root.innerHTML = ConfirmIntentModalHTML();
   else if (state.modal === "visibility") root.innerHTML = VisibilityModalHTML();
   else if (state.modal === "owner") root.innerHTML = OwnerModalHTML();
@@ -5158,6 +5636,7 @@ function renderApp() {
 }
 function renderAppInner() {
   const app = document.getElementById("app");
+  endCookModeIfAway();
   /* A share link is readable before there is an account, so this comes ahead
      of the sign-in wall rather than behind it. */
   if (state.view === "link") {
@@ -5167,7 +5646,7 @@ function renderAppInner() {
     return;
   }
   if (!state.session) { app.innerHTML = WelcomeViewHTML(); renderTabBar(); renderModal(); return; }
-  if (state.loading) { app.innerHTML = '<div class="loading">Loading your recipe box…</div>'; renderTabBar(); renderModal(); return; }
+  if (state.loading) { app.innerHTML = '<div class="loading">Loading your cupboard…</div>'; renderTabBar(); renderModal(); return; }
   if (state.view === "library") app.innerHTML = LibraryViewHTML();
   else if (state.view === "detail") app.innerHTML = DetailViewHTML(getActiveRecipe());
   else if (state.view === "friends") app.innerHTML = FriendsViewHTML();
@@ -5207,67 +5686,195 @@ function placeCalendarScroll() {
 /* ====================================================================== */
 const Actions = {};
 
-/* --- session --- */
-Actions.regenerateCookbook = function() {
-  state._wUsername = document.getElementById("w-username").value;
-  state._wCookbook = randomCookbookId();
+/* --- session ---
+   Every field on the welcome screen is read back into state before anything
+   redraws, because opening an info note or ticking the household box redraws
+   the whole panel - and a form that loses what you typed the moment you ask
+   it a question is not a form anybody finishes. */
+function fieldValue(id) { const el = document.getElementById(id); return el ? el.value : null; }
+function fieldChecked(id) { const el = document.getElementById(id); return el ? el.checked : null; }
+function captureWelcome() {
+  const pairs = [["w-name", "_wName"], ["w-email", "_wEmail"], ["w-email2", "_wEmail2"],
+                 ["w-pass", "_wPass"], ["w-cookbook", "_wCookbook"],
+                 ["w-lemail", "_wLoginEmail"], ["w-lpass", "_wLoginPass"]];
+  pairs.forEach(function (p) {
+    const v = fieldValue(p[0]);
+    if (v !== null) state[p[1]] = v;
+  });
+  const join = fieldChecked("w-join");
+  if (join !== null) state._wJoin = join;
+  const save = fieldChecked("w-save");
+  if (save !== null) state._wSave = save;
+  const saveL = fieldChecked("w-lsave");
+  if (saveL !== null) state._wSave = saveL;
+}
+Actions.wMode = function(which) {
+  captureWelcome();
+  state._wMode = state._wMode === which ? "" : which;
   state.modalError = "";
   renderApp();
 };
-Actions.copyCookbookField = async function() {
-  const v = document.getElementById("w-cookbook").value.trim().toUpperCase();
-  try { await navigator.clipboard.writeText(v); toast("Cookbook ID copied"); }
-  catch (e) { toast("Couldn't copy — select the text instead"); }
+Actions.wInfo = function(key) {
+  captureWelcome();
+  state._wInfo = state._wInfo || {};
+  state._wInfo[key] = !state._wInfo[key];
+  renderApp();
 };
+Actions.wToggleJoin = function() { captureWelcome(); renderApp(); };
+function welcomeFailed(message) { state._wBusy = false; state.modalError = message; renderApp(); }
 Actions.copyCookbookId = async function() {
   try { await navigator.clipboard.writeText(state.session.cookbookId); toast("Cookbook ID copied"); }
   catch (e) { toast("Couldn't copy — select the text instead"); }
 };
-Actions.submitSession = async function() {
-  const username = document.getElementById("w-username").value.trim();
-  const cookbookId = document.getElementById("w-cookbook").value.trim().toUpperCase();
-  state._wUsername = username;
-  state._wCookbook = cookbookId;
-  if (!username) { state.modalError = "Enter a username."; renderApp(); return; }
-  await openSession({ username, cookbookId });
-};
-async function openSession(payload) {
+
+Actions.signUp = async function() {
+  captureWelcome();
+  const name = (state._wName || "").trim();
+  const email = (state._wEmail || "").trim();
+  const email2 = (state._wEmail2 || "").trim();
+  const pass = state._wPass || "";
+  const join = !!state._wJoin;
+  const cookbookId = (state._wCookbook || "").trim().toUpperCase();
+  if (!name) { welcomeFailed("Enter the name your friends will see."); return; }
+  if (!email) { welcomeFailed("Enter your email address."); return; }
+  if (email.toLowerCase() !== email2.toLowerCase()) { welcomeFailed("The two email addresses do not match."); return; }
+  if (pass.length < 8) { welcomeFailed("Pick a password of at least 8 characters."); return; }
+  if (join && !cookbookId) { welcomeFailed("Paste the Cookbook ID you were given, or untick the household box."); return; }
+  state._wBusy = true; state.modalError = ""; renderApp();
+  let clientHash;
+  try { clientHash = await derivePasswordKey(email, pass); }
+  catch (e) { welcomeFailed("This browser cannot scramble the password. Try a current browser."); return; }
   try {
-    const data = await API("session", payload);
-    state.session = { username: data.username, cookbookId: data.cookbookId };
-    saveSession(state.session);
-    state.modalError = "";
-    state.view = "library";
-    await refreshLibrary(true);
-    if (data.created) toast("Cookbook created — save your Cookbook ID somewhere safe");
-    else if (data.joined) toast("You joined a cookbook shared with " + (data.members - 1) + " other " + (data.members === 2 ? "person" : "people"));
-    /* They arrived by scanning something and have only now got a cookbook. */
-    const waiting = takeStashedIntent();
-    if (waiting) await Actions.beginIntent(waiting);
-  } catch (e) {
-    if (e.code === "CONFIRM_JOIN") {
-      if (confirm(e.message + "\\n\\nJoin this cookbook?")) {
-        await openSession(Object.assign({}, payload, { confirmJoin: true }));
-        return;
-      }
-      state.modalError = "";
-      renderApp();
-      return;
-    }
-    state.modalError = e.message;
-    renderApp();
-  }
+    const data = await API("auth/signup", {
+      name: name, email: email, emailConfirm: email2, clientHash: clientHash,
+      joinCookbook: join, cookbookId: join ? cookbookId : ""
+    });
+    await enterSession(data);
+    if (data.claimed) toast("Welcome back — your cookbook is now on an email and password");
+    else if (data.joined) toast("You joined a cookbook shared with " + (data.members - 1) + " other person");
+    else toast("Account created — your cupboard is ready");
+  } catch (e) { welcomeFailed(e.message); }
+};
+
+Actions.signIn = async function() {
+  captureWelcome();
+  const email = (state._wLoginEmail || "").trim();
+  const pass = state._wLoginPass || "";
+  if (!email) { welcomeFailed("Enter your email address."); return; }
+  if (!pass) { welcomeFailed("Enter your password."); return; }
+  state._wBusy = true; state.modalError = ""; renderApp();
+  let clientHash;
+  try { clientHash = await derivePasswordKey(email, pass); }
+  catch (e) { welcomeFailed("This browser cannot scramble the password. Try a current browser."); return; }
+  try {
+    const data = await API("auth/login", { email: email, clientHash: clientHash });
+    await enterSession(data);
+  } catch (e) { welcomeFailed(e.message); }
+};
+
+async function enterSession(data) {
+  state.session = {
+    token: data.token, username: data.username, cookbookId: data.cookbookId,
+    email: data.email || "", persist: !!state._wSave
+  };
+  saveSession(state.session);
+  state._wBusy = false;
+  state._wPass = ""; state._wLoginPass = "";
+  state.modalError = "";
+  state.view = "library";
+  await refreshLibrary(true);
+  /* They arrived by scanning something and have only now got a cookbook. */
+  const waiting = takeStashedIntent();
+  if (waiting) await Actions.beginIntent(waiting);
 }
-Actions.signOut = function() {
-  if (!confirm("Sign out on this device? You will need your username and Cookbook ID to get back in.")) return;
+
+Actions.signOut = async function() {
+  if (!confirm("Sign out on this device? You will need your email address and password to get back in.")) return;
+  try { await API("auth/logout", {}); } catch (e) {}
   clearSession();
   state.session = null;
   state.modal = null;
   state.recipes = [];
-  state._wUsername = "";
-  state._wCookbook = undefined;
-  state._suggestedCookbook = null;
+  state.bodies = {};
+  state.logs = {};
+  state.ratings = {};
+  state.cooks = {};
+  state.cookFeed = [];
+  state.bodyPending = {};
+  state._wMode = "";
+  state._wName = ""; state._wEmail = ""; state._wEmail2 = ""; state._wPass = "";
+  state._wLoginEmail = ""; state._wLoginPass = "";
+  state._wJoin = false; state._wCookbook = "";
+  state._wInfo = {};
+  state._wBusy = false;
   renderApp();
+};
+
+/* --- account --- */
+Actions.copySupportEmail = async function() {
+  try { await navigator.clipboard.writeText(SUPPORT_EMAIL); toast("Address copied"); }
+  catch (e) { toast("Couldn't copy — select the text instead"); }
+};
+function acctFailed(message) { state._acctBusy = false; state.modalError = message; renderModal(); }
+Actions.changePassword = async function() {
+  const email = (state.session && state.session.email) || "";
+  if (!email) { acctFailed("Sign out and back in first, so this device knows your address."); return; }
+  const current = fieldValue("cp-current") || "";
+  const next = fieldValue("cp-new") || "";
+  const again = fieldValue("cp-new2") || "";
+  if (!current) { acctFailed("Enter your current password."); return; }
+  if (next.length < 8) { acctFailed("Pick a new password of at least 8 characters."); return; }
+  if (next !== again) { acctFailed("The two new passwords do not match."); return; }
+  state._acctBusy = true; state.modalError = ""; renderModal();
+  try {
+    const currentClientHash = await derivePasswordKey(email, current);
+    const newClientHash = await derivePasswordKey(email, next);
+    await API("account/password", { currentClientHash: currentClientHash, newClientHash: newClientHash });
+    state._acctBusy = false;
+    Actions.closeModal();
+    toast("Password changed");
+  } catch (e) { acctFailed(e.message); }
+};
+/* The address is half the salt the password is hashed with, so changing it
+   means re-deriving against the new one. Both go up together: the old hash
+   proves who is asking, the new one is what gets stored. */
+Actions.changeEmail = async function() {
+  const current = (fieldValue("ce-current") || "").trim();
+  const next = (fieldValue("ce-new") || "").trim();
+  const pass = fieldValue("ce-pass") || "";
+  if (!current || !next) { acctFailed("Enter both addresses."); return; }
+  if (current.toLowerCase() === next.toLowerCase()) { acctFailed("That is already your email address."); return; }
+  if (!pass) { acctFailed("Enter your password."); return; }
+  state._acctBusy = true; state.modalError = ""; renderModal();
+  try {
+    const clientHash = await derivePasswordKey(current, pass);
+    const newClientHash = await derivePasswordKey(next, pass);
+    const data = await API("account/email", {
+      currentEmail: current, newEmail: next,
+      clientHash: clientHash, newClientHash: newClientHash
+    });
+    state.session.email = data.email;
+    saveSession(state.session);
+    state._acctBusy = false;
+    Actions.closeModal();
+    toast("Email changed");
+  } catch (e) { acctFailed(e.message); }
+};
+Actions.adminSetPassword = async function() {
+  const token = (fieldValue("adm-token") || "").trim();
+  const email = (fieldValue("adm-email") || "").trim();
+  const temp = fieldValue("adm-temp") || "";
+  const out = document.getElementById("adm-out");
+  if (!token || !email || temp.length < 8) {
+    if (out) out.textContent = "Needs the admin token, an address, and a password of at least 8 characters.";
+    return;
+  }
+  if (out) out.textContent = "Working…";
+  try {
+    const clientHash = await derivePasswordKey(email, temp);
+    const data = await API("admin/password", { token: token, email: email, clientHash: clientHash });
+    if (out) out.textContent = "Temporary password set for " + data.username + ". They are signed out everywhere.";
+  } catch (e) { if (out) out.textContent = "Failed: " + e.message; }
 };
 
 /* --- navigation --- */
@@ -5279,6 +5886,10 @@ Actions.openDetail = function(id, showLogs) {
   state.scheduledFor = null;
   setWatch(id);
   renderApp();
+  /* The name, description and tags are already on screen from the card. The
+     ingredients, the steps and the cook log are not, so they are fetched and
+     dropped into place underneath rather than held up behind a blank page. */
+  loadBodyInto(id);
 };
 Actions.backToLibrary = function() {
   state.view = "library"; state.scheduledFor = null; setWatch(null); renderApp();
@@ -5354,9 +5965,13 @@ Actions.openNotification = function(id) {
   Actions.openDetail(n.recipeId, n.kind === "cook");
 };
 Actions.refreshWatched = async function() {
+  const id = state.activeId;
   await refreshLibrary(false);
-  setWatch(state.activeId);
+  setWatch(id);
   renderApp();
+  /* A sync drops any body whose version moved, so this is what brings the
+     new one back rather than leaving the reader on a loading line. */
+  if (id && state.view === "detail") await loadBodyInto(id);
 };
 Actions.loadTheirVersion = function() {
   if (!confirm("Load their version? Your unsaved changes to this recipe will be lost.")) return;
@@ -5371,12 +5986,25 @@ Actions.reload = function() { refreshLibrary(true); };
 
 /* Typing must not re-render the page or the field loses focus mid-word, so
    the clear button is toggled by hand alongside the results. */
+/* Filtering is local - nothing here asks the server anything - but rebuilding
+   the results block still costs a pass over every recipe plus the markup for
+   fifty cards, and doing that between two letters typed quickly is work
+   thrown away. The state is set at once so the field and the clear button
+   stay honest; only the redraw waits. */
+const SEARCH_DELAY_MS = 140;
+let searchTimer = null;
 Actions.onSearchInput = function(v) {
   state.search = v;
   updateSearchClear();
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(function () { searchTimer = null; updateResultsSection(); }, SEARCH_DELAY_MS);
+};
+Actions.showMore = function() {
+  state.shown = (state.shown || PAGE_SIZE) + PAGE_SIZE;
   updateResultsSection();
 };
 Actions.clearSearch = function() {
+  if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
   state.search = "";
   const el = document.getElementById("search-input");
   if (el) { el.value = ""; el.focus(); }
@@ -5579,41 +6207,143 @@ Actions.toggleCustomScale = function() { state.customScaleOpen = !state.customSc
 Actions.setCustomScale = function(v) { const n = parseFloat(v); if (!isNaN(n) && n > 0) state.scale = n; updateRecipeBody(); };
 Actions.toggleShowAllLogs = function() { state._showAllLogs = !state._showAllLogs; updateRecipeBody(); };
 
+/* ---- Cook mode -------------------------------------------------------
+   A screen wake lock, and nothing more: no bigger type, no hidden chrome.
+   What it buys is a recipe that is still readable when you come back from
+   the sink with your hands full.
+   Two things about the platform shape this. The lock is only offered over
+   https on iOS 16.4 and up, so on anything older there is no button at all
+   rather than a button that lies. And iOS hands the lock back every time the
+   page is hidden - a notification, a switch to the timer, the side button -
+   so it has to be taken again each time the page comes back, which is what
+   the visibilitychange handler below is for. Even then it only stops the
+   automatic dim and lock; nothing can stop the side button, and nothing
+   should. */
+let wakeSentinel = null;
+function wakeLockSupported() {
+  return typeof navigator !== "undefined" && !!navigator.wakeLock &&
+    typeof navigator.wakeLock.request === "function";
+}
+async function acquireWakeLock() {
+  if (!wakeLockSupported() || wakeSentinel) return true;
+  try {
+    const s = await navigator.wakeLock.request("screen");
+    wakeSentinel = s;
+    /* The browser can drop it on its own - low battery, a policy change - and
+       says so here. Forgetting the stale sentinel means the next attempt
+       actually asks for a new one instead of assuming it still holds. */
+    if (s && s.addEventListener) {
+      s.addEventListener("release", function () { if (wakeSentinel === s) wakeSentinel = null; });
+    }
+    return true;
+  } catch (e) { wakeSentinel = null; return false; }
+}
+function releaseWakeLock() {
+  if (!wakeSentinel) return;
+  try { wakeSentinel.release(); } catch (e) {}
+  wakeSentinel = null;
+}
+Actions.toggleCookMode = async function () {
+  if (state.cookMode) {
+    state.cookMode = false;
+    releaseWakeLock();
+    renderApp();
+    toast("Cook mode off");
+    return;
+  }
+  /* Asked for on the tap rather than on the render, because the browsers
+     that offer this require the request to come out of a real gesture. */
+  const got = await acquireWakeLock();
+  if (!got) { toast("This browser will not keep the screen awake."); return; }
+  state.cookMode = true;
+  renderApp();
+  toast("Cook mode on - the screen will stay awake");
+};
+/* Walking away from the recipe ends it. Otherwise the screen burns on
+   indefinitely with the only sign of it two views back. */
+function endCookModeIfAway() {
+  if (!state.cookMode) return;
+  if (state.view === "detail" || state.view === "link") return;
+  state.cookMode = false;
+  releaseWakeLock();
+}
+
+Actions.openShare = function (recipeId) {
+  state.shareId = recipeId;
+  Actions.openModal("share");
+};
+
 Actions.openModal = function(name) {
   setTabsDown(false);
   state.modal = name;
   state.modalError = "";
-  if (name === "logCook") state.logRating = 0;
+  state._acctBusy = false;
   if (name === "import") { state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = ""; }
   if (name === "urlToRecipe") state.urlToRecipe = { mode: state._nextImportMode || "url", url: "", text: "", prompt: "", generated: false };
   renderModal();
 };
 Actions.closeModal = function() { state.modal = null; state.modalError = ""; renderModal(); updateLibraryChrome(); };
 
+/* --- rating --- */
+/* One per cookbook, so this overwrites rather than adds, and 0 clears it.
+   The library is re-read afterwards because the average on every card that
+   shows this recipe has just moved. */
+Actions.setRating = async function(n) {
+  const r = getActiveRecipe();
+  if (!r) return;
+  const want = Math.max(0, Math.min(5, Math.round(Number(n) || 0)));
+  const st = statsFor(r.recipeId);
+  if (!st.ourCooks) { toast("Log a cook first, then you can rate it"); return; }
+  if (want === st.mine) return;
+  try {
+    await API("recipe/rate", { recipeId: r.recipeId, rating: want });
+    await refreshLibrary(false);
+    updateRecipeBody();
+    toast(want ? "Rated " + want + " out of 5" : "Rating cleared");
+  } catch (e) { toast(e.message); }
+};
+
 /* --- cook log --- */
-Actions.setLogRating = function(n) { state.logRating = n; renderModal(); };
 Actions.saveCookLog = async function() {
   const r = getActiveRecipe();
   if (!r) return;
-  if (!state.logRating) { toast("Pick a rating first"); return; }
-  const date = document.getElementById("cl-date").value || todayStr();
-  const comment = document.getElementById("cl-notes").value.trim();
+  const dateEl = document.getElementById("cl-date");
+  const notesEl = document.getElementById("cl-notes");
+  const date = (dateEl && dateEl.value) || todayStr();
+  const comment = notesEl ? notesEl.value.trim() : "";
   try {
-    await API("comment/add", { recipeId: r.recipeId, rating: state.logRating, comment, cookedOn: date });
+    await API("comment/add", { recipeId: r.recipeId, comment, cookedOn: date });
     state.modal = null;
+    /* The log we hold for this recipe is now one entry short of the truth,
+       so it is dropped and fetched again with the body still cached. */
+    delete state.logs[r.recipeId];
     await refreshLibrary(false);
+    await reloadLog(r.recipeId);
     setWatch(r.recipeId);
     toast("Cook logged");
   } catch (e) { state.modalError = e.message; renderModal(); }
 };
 Actions.deleteComment = async function(commentId) {
   if (!confirm("Delete this cook log entry?")) return;
+  const id = state.activeId;
   try {
     await API("comment/delete", { commentId });
+    delete state.logs[id];
     await refreshLibrary(false);
+    await reloadLog(id);
     toast("Entry deleted");
   } catch (e) { toast(e.message); }
 };
+/* Re-reads one recipe's cook log without disturbing anything else. The body
+   is already cached and unchanged, so only the log comes back into use. */
+async function reloadLog(recipeId) {
+  if (!recipeId) return;
+  const keep = state.bodies[recipeId];
+  delete state.bodies[recipeId];
+  await ensureBody(recipeId);
+  if (!state.bodies[recipeId] && keep) state.bodies[recipeId] = keep;
+  renderApp();
+}
 
 /* --- friends --- */
 Actions.sendFriendRequest = async function() {
@@ -5769,15 +6499,25 @@ Actions.confirmImport = async function() {
     toast("Imported " + res.count + " recipe" + (res.count === 1 ? "" : "s"));
   } catch (e) { state.modalError = e.message; renderModal(); }
 };
-Actions.exportAll = function() {
+Actions.exportAll = async function() {
   const list = hasActiveFilter() ? filteredRecipes() : state.recipes;
   if (!list.length) { toast("Nothing to export"); return; }
-  const lines = list.map(r => JSON.stringify(normalizeBody(r)));
+  /* A card carries a name and a line of description and nothing else, which
+     is not a recipe. The bodies are fetched first, in batches, so what lands
+     in the file is the whole thing. */
+  state.busy = true;
+  renderApp();
+  await ensureBodies(list.map(r => r.recipeId));
+  state.busy = false;
+  renderApp();
+  const bodies = list.map(r => recipeById(r.recipeId)).filter(hasBody);
+  if (!bodies.length) { toast("Those recipes could not be read"); return; }
+  const lines = bodies.map(r => JSON.stringify(normalizeBody(r)));
   const blob = new Blob([lines.join("\\n")], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = (hasActiveFilter() ? "recipe-box-selected-" : "recipe-box-export-") + todayStr() + ".txt";
+  a.download = (hasActiveFilter() ? "kindred-cupboard-selected-" : "kindred-cupboard-export-") + todayStr() + ".txt";
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
@@ -5857,8 +6597,13 @@ Actions.openNew = function() {
   renderApp();
 };
 Actions.openEdit = async function(id, takeover) {
-  const r = state.recipes.find(x => x.recipeId === id);
-  if (!r || !r.ours) { toast("You can only edit recipes in your own cookbook"); return; }
+  const sum = summaryById(id);
+  if (!sum || !sum.ours) { toast("You can only edit recipes in your own cookbook"); return; }
+  /* The form is the whole recipe, so unlike the reading view there is nothing
+     useful to show before it has arrived. */
+  await ensureBody(id);
+  const r = recipeById(id);
+  if (!hasBody(r)) { toast("That recipe could not be opened for editing"); return; }
 
   /* Claim the recipe before opening the form, so two people cannot both
      spend ten minutes on the same edit. */
@@ -6091,7 +6836,7 @@ Actions.toggleVisShare = async function(i) {
     await refreshLibrary(false);
   } catch (e) { toast(e.message); }
 };
-/* Leaving a shared recipe. With an account that means the recipe box; with
+/* Leaving a shared recipe. With an account that means the cupboard; with
    none it means the sign-in screen, which is what the back button offers to
    somebody reading a link cold. The stashed intent survives either way, so
    making a cookbook lands them back on the recipe they came for. */
@@ -6286,18 +7031,23 @@ Actions.openCalDay = function(key) {
 Actions.openScheduled = function(entryId) {
   const e = entryById(entryId);
   if (!e) return;
-  const r = recipeById(e.recipeId);
-  if (!r) { toast("That recipe is no longer in your box"); return; }
+  if (!summaryById(e.recipeId)) { toast("That recipe is no longer in your box"); return; }
   state.modal = null;
   state.calDay = null;
   state.activeId = e.recipeId;
   state.view = "detail";
-  state.scale = factorFor(r, e.servings);
+  state.scale = factorFor(recipeById(e.recipeId), e.servings);
   state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
   state.scheduledFor = { entryId: e.entryId, recipeId: e.recipeId, date: e.date, servings: e.servings };
   state._showAllLogs = false;
   setWatch(e.recipeId);
   renderApp();
+  /* The scale depends on the recipe's own base servings, which live in the
+     body, so it is worked out again once that has landed. */
+  loadBodyInto(e.recipeId, function () {
+    state.scale = factorFor(recipeById(e.recipeId), e.servings);
+    state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
+  });
 };
 
 /* Same rule as the library search: repaint the results only, or the field
@@ -6347,14 +7097,18 @@ Actions.scheduleFromDay = function(recipeId) {
   Actions.openSchedule(recipeId, state.calDay, true);
 };
 
-Actions.openSchedule = function(recipeId, onDate, backToDay) {
+Actions.openSchedule = async function(recipeId, onDate, backToDay) {
+  if (!summaryById(recipeId)) { toast("That recipe is no longer in your box"); return; }
+  /* The frame prices the ingredients for a number of mouths, so it needs the
+     ingredients and the recipe's own base servings before it can open. */
+  await ensureBody(recipeId);
   const r = recipeById(recipeId);
   if (!r) { toast("That recipe is no longer in your box"); return; }
   state.scheduleDraft = {
     entryId: null,
     recipeId: recipeId,
     date: onDate || state.calDay || localToday(),
-    servings: (Number(r.servings.base) > 0 ? Number(r.servings.base) : 1),
+    servings: ((r.servings && Number(r.servings.base) > 0) ? Number(r.servings.base) : 1),
     backToDay: !!backToDay
   };
   state.schedWeekTop = null;
@@ -6365,9 +7119,11 @@ Actions.openSchedule = function(recipeId, onDate, backToDay) {
 /* The same frame doing the other half of its job. Because it carries a week
    strip and a servings box, editing an entry covers both "make more of it"
    and "actually, Thursday" without a second dialog for the second case. */
-Actions.openScheduleEdit = function(entryId) {
+Actions.openScheduleEdit = async function(entryId) {
   const e = entryById(entryId);
   if (!e) return;
+  if (!summaryById(e.recipeId)) { toast("That recipe is no longer in your box"); return; }
+  await ensureBody(e.recipeId);
   const r = recipeById(e.recipeId);
   if (!r) { toast("That recipe is no longer in your box"); return; }
   state.scheduleDraft = {
@@ -6845,10 +7601,16 @@ Actions.createGroceryList = async function() {
   const rng = state.groceryRange;
   if (!rng.start || !rng.end) { toast("Pick both dates first"); return; }
   if (rng.start > rng.end) { toast("The last day is before the first one"); return; }
-  const items = buildGroceryItems(rng.start, rng.end);
-  if (!items.length && !confirm("Nothing is scheduled for those days. Build an empty list anyway?")) return;
-  const label = uniqueListLabel(rangeLabel(rng.start, rng.end), state.groceryLists);
   state.busy = true;
+  renderApp();
+  await ensureBodies(scheduledRecipeIds(rng.start, rng.end));
+  const items = buildGroceryItems(rng.start, rng.end);
+  if (!items.length && !confirm("Nothing is scheduled for those days. Build an empty list anyway?")) {
+    state.busy = false;
+    renderApp();
+    return;
+  }
+  const label = uniqueListLabel(rangeLabel(rng.start, rng.end), state.groceryLists);
   try {
     const res = await API("grocery/create", {
       startDate: rng.start, endDate: rng.end, label: label, items: items
@@ -7379,7 +8141,11 @@ window.Actions = Actions;
 /* ====================================================================== */
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", function() {
-    if (!document.hidden) pollWatched();
+    if (document.hidden) return;
+    pollWatched();
+    /* iOS gives the wake lock back the moment the page is hidden, so coming
+       back to a recipe with cook mode still on means asking for it again. */
+    if (state.cookMode) acquireWakeLock();
   });
 }
 /* The toolbar sliding in or out, the keyboard arriving, a rotation: each one
@@ -7720,23 +8486,125 @@ const RL_WINDOW_MS = 10 * 60 * 1000;
 const RL_MAX_FAILURES = 30;
 
 function placeholders(n) { return new Array(n).fill("?").join(","); }
+/* D1 caps a statement at 100 bound parameters. The reach queries dodge that
+   by asking the friendships table directly, but the places that genuinely
+   hold a list of ids - the households to be named, the meals to be filled in
+   - have no subquery to hide behind. A cookbook with fifty friends, or one
+   on a lot of guest lists, would sail past the cap and the statement would
+   throw rather than slow. So the list is cut into lengths the cap allows and
+   the pieces go out together in one batch, which costs the same round trip a
+   single statement would have. */
+const IN_CHUNK = 90;
+function chunked(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i += IN_CHUNK) out.push(list.slice(i, i + IN_CHUNK));
+  return out;
+}
+/* One batch, all rows, order irrelevant. */
+async function batchRows(env, statements) {
+  if (!statements.length) return [];
+  const res = await env.DB.batch(statements);
+  const out = [];
+  for (const r of res) for (const row of ((r && r.results) || [])) out.push(row);
+  return out;
+}
 
 function cleanString(v, max) {
   return typeof v === "string" ? v.trim().slice(0, max || 500) : "";
 }
 
-/* ---------------------------------------------------------------- auth -- */
+/* ---------------------------------------------------------------- auth --
+   Passwords are hashed twice, in two different places, for one reason: a
+   Worker on the free plan gets ten milliseconds of CPU per request, and a
+   password hash worth the name costs more than that. So the expensive half
+   runs in the browser - PBKDF2-HMAC-SHA256, 100,000 rounds, salted with the
+   address so no round trip is needed to look the salt up - and the server
+   only ever sees the result. What arrives here is therefore a password
+   equivalent, not a password: it must not be stored as it stands, or the
+   database would hold the very thing an attacker needs to sign in. Hence the
+   cheap second pass with a per-account random salt, which is one SHA-256 and
+   costs nothing. The plaintext never leaves the device, and none of this
+   changes if the Worker moves to Paid. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const CLIENT_HASH_RE = /^[0-9a-f]{64}$/;
+const TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const SESSION_DAYS = 90;
+/* A cookbook is a household, and a household is two people. Anyone else you
+   cook with is a friend, which shares recipes without handing over the keys
+   to the whole cupboard. */
+const MAX_COOKBOOK_MEMBERS = 2;
+const BAD_COOKBOOK_TRIES = 5;
+
+function hexOf(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
+  return out;
+}
+async function sha256Hex(text) {
+  return hexOf(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+}
+/* The cheap second pass. Salted per account so two people who chose the same
+   password do not land on the same row value. */
+function serverHash(salt, clientHash) { return sha256Hex(String(salt) + ":" + String(clientHash)); }
+/* Comparison that does not return early on the first wrong character. */
+function sameSecret(a, b) {
+  const x = String(a || ""), y = String(b || "");
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+const newSessionToken = () => randomFrom(TOKEN_ALPHABET, 43);
+function sessionExpiry() {
+  return new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+}
+async function startSession(env, usernameLc) {
+  const token = newSessionToken();
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "INSERT INTO sessions (token, username_lc, created_at, expires_at) VALUES (?, ?, ?, ?)"
+  ).bind(token, usernameLc, now, sessionExpiry()).run();
+  return token;
+}
+async function setPassword(env, usernameLc, clientHash) {
+  const salt = randomFrom(TOKEN_ALPHABET, 24);
+  const stored = await serverHash(salt, clientHash);
+  await env.DB.prepare(
+    "UPDATE users SET pw_hash = ?, pw_salt = ?, pw_updated_at = ? WHERE username_lc = ?"
+  ).bind(stored, salt, new Date().toISOString(), usernameLc).run();
+}
+/* Changing a password or an address logs every other device out. The one
+   asking keeps its own token, so the person doing it is not thrown out of
+   the screen they are standing on. */
+async function dropOtherSessions(env, usernameLc, keepToken) {
+  await env.DB.prepare(
+    "DELETE FROM sessions WHERE username_lc = ? AND token != ?"
+  ).bind(usernameLc, keepToken || "").run();
+}
+async function emailRowFor(env, usernameLc) {
+  return await env.DB.prepare(
+    "SELECT email, email_lc FROM user_emails WHERE username_lc = ?"
+  ).bind(usernameLc).first();
+}
+
 async function requireAuth(env, body) {
-  const username = cleanString(body.username, 40);
-  const cookbookId = cleanString(body.cookbookId, 40).toUpperCase();
-  if (!username || !cookbookId) throw new ApiError(401, "Sign in again to continue.", "AUTH");
+  const token = cleanString(body.token, 80);
+  if (!token) throw new ApiError(401, "Sign in again to continue.", "AUTH");
   const row = await env.DB.prepare(
-    "SELECT username, username_lc, cookbook_id FROM users WHERE username_lc = ?"
-  ).bind(username.toLowerCase()).first();
-  if (!row || row.cookbook_id !== cookbookId) {
-    throw new ApiError(401, "That username and Cookbook ID don't go together.", "AUTH");
+    "SELECT s.expires_at AS expires_at, u.username AS username, u.username_lc AS username_lc, " +
+    "u.cookbook_id AS cookbook_id FROM sessions s JOIN users u ON u.username_lc = s.username_lc " +
+    "WHERE s.token = ?"
+  ).bind(token).first();
+  if (!row) throw new ApiError(401, "Sign in again to continue.", "AUTH");
+  if (row.expires_at && Date.parse(row.expires_at) < Date.now()) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
+    throw new ApiError(401, "That sign-in has expired. Sign in again to continue.", "AUTH");
   }
-  return { username: row.username, usernameLc: row.username_lc, cookbookId: row.cookbook_id };
+  return {
+    username: row.username, usernameLc: row.username_lc,
+    cookbookId: row.cookbook_id, token: token
+  };
 }
 
 /* ------------------------------------------------------------ throttle -- */
@@ -7750,6 +8618,19 @@ async function throttleGuard(env, buckets) {
       const mins = Math.max(1, Math.ceil((RL_WINDOW_MS - (now - row.window_start)) / 60000));
       throw new ApiError(429, "Too many failed name lookups. Try again in " + mins + " minute" + (mins === 1 ? "" : "s") + ".");
     }
+  }
+}
+/* The same counter, read against a limit of the caller's choosing. Five
+   wrong Cookbook IDs is a different thing from thirty failed lookups, and
+   guessing a ten-character ID is exactly what the low number is for. */
+async function attemptGuard(env, bucket, max, what) {
+  const row = await env.DB.prepare(
+    "SELECT window_start, count FROM rate_limits WHERE bucket = ?"
+  ).bind(bucket).first();
+  if (row && (Date.now() - row.window_start) < RL_WINDOW_MS && row.count >= max) {
+    const mins = Math.max(1, Math.ceil((RL_WINDOW_MS - (Date.now() - row.window_start)) / 60000));
+    throw new ApiError(429, "Too many " + what + ". Try again in " + mins +
+      " minute" + (mins === 1 ? "" : "s") + ".");
   }
 }
 async function throttleRecordFailure(env, buckets) {
@@ -7790,12 +8671,17 @@ async function membersOf(env, cookbookIds) {
   const ids = Array.from(new Set(cookbookIds.filter(Boolean)));
   const map = {};
   if (!ids.length) return map;
-  const rows = await env.DB.prepare(
+  const rows = await batchRows(env, chunked(ids).map(part => env.DB.prepare(
     "SELECT username, cookbook_id FROM users WHERE cookbook_id IN (" +
-    placeholders(ids.length) + ") ORDER BY username COLLATE NOCASE"
-  ).bind(...ids).all();
-  for (const r of rows.results || []) {
+    placeholders(part.length) + ") ORDER BY username COLLATE NOCASE"
+  ).bind(...part)));
+  for (const r of rows) {
     (map[r.cookbook_id] = map[r.cookbook_id] || []).push(r.username);
+  }
+  /* Sorting is per cookbook anyway, and comes back per chunk, so it is
+     settled here rather than trusted to the statement. */
+  for (const cb of Object.keys(map)) {
+    map[cb].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   }
   return map;
 }
@@ -7843,6 +8729,78 @@ async function applyVisibilityReach(env, recipeId, visibility) {
   await env.DB.prepare("DELETE FROM link_grants WHERE recipe_id = ?").bind(recipeId).run();
 }
 
+/* Everything one cookbook is allowed to see, as a fragment of SQL. Written
+   once and used by the library listing, the rating totals, the cook totals
+   and the batch body fetch, so those four can never drift apart on what
+   counts as visible. prefix is "r." where the recipes table is joined under
+   an alias and "" where it is the only table in the statement. */
+/* The cookbooks linked to this one, as a subquery rather than a list of
+   bound ids. D1 caps a statement at 100 bound parameters. Inlining one
+   placeholder per friend - twice over in the heaviest queries, once for
+   which recipes are reachable and once for whose ratings and cooks count -
+   put a hard ceiling of 48 friends on a sync, past which it threw rather
+   than slowed. Asking the friendships table directly costs two binds no
+   matter how many friends there are, and saves a round trip besides.
+
+   The union of the two halves is deliberate. There is an index on each of
+   requester_cb and addressee_cb, and this form uses both; an OR across the
+   two columns tends to collapse into a scan instead. */
+const FRIEND_CBS_SQL =
+  "SELECT addressee_cb AS cb FROM friendships WHERE requester_cb = ? AND status = 'accepted' " +
+  "UNION SELECT requester_cb AS cb FROM friendships WHERE addressee_cb = ? AND status = 'accepted'";
+
+/* The same set plus this cookbook itself: whose ratings and whose cook log
+   entries this cookbook is allowed to see. Three binds, always. */
+function voicesClause(cookbookId) {
+  return { sql: "SELECT ? AS cb UNION " + FRIEND_CBS_SQL,
+           binds: [cookbookId, cookbookId, cookbookId] };
+}
+
+/* A short fingerprint of who this cookbook is linked to, and when each link
+   was last touched. It changes when a friendship is made, unmade or remade,
+   and not otherwise - so the client can tell a sync where its reach moved
+   from an ordinary one where only recipes did.
+
+   This matters because a reach change alters things the per-recipe version
+   check cannot see. A friend's recipe keeps the same updated_at when you
+   befriend somebody new, but its cook log does not: the log is filtered by
+   who you are linked to, so a cached copy is quietly missing the new
+   household's entries, or still showing an old one's. */
+function reachStamp(pairs) {
+  const flat = pairs.slice().sort().join("|");
+  let h = 2166136261;
+  for (let i = 0; i < flat.length; i++) {
+    h ^= flat.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return pairs.length + "-" + (h >>> 0).toString(36);
+}
+
+function visibleRecipeClause(cookbookId, prefix) {
+  const p = prefix || "";
+  const binds = [cookbookId];
+  let clause = p + "cookbook_id = ?";
+  clause += " OR (" + p + "visibility = 'friends' AND " + p + "cookbook_id IN (" +
+    FRIEND_CBS_SQL + "))";
+  binds.push(cookbookId, cookbookId);
+  /* A recipe handed to this cookbook specifically - which is what the
+     selective tier is - or one they pinned from a share link. */
+  clause += " OR " + p + "recipe_id IN (SELECT recipe_id FROM recipe_shares WHERE cookbook_id = ?)";
+  binds.push(cookbookId);
+  clause += " OR " + p + "recipe_id IN (SELECT recipe_id FROM link_grants WHERE cookbook_id = ?)";
+  binds.push(cookbookId);
+  return { clause, binds };
+}
+
+/* How much cooking news rides along with a sync, and for how long. Both are
+   deliberately small: this is the notifications page catching up, not an
+   archive, and the full log of any recipe is one tap away inside it. */
+const COOK_FEED_DAYS = 60;
+const COOK_FEED_MAX = 60;
+/* A shopping list or an export can want a lot of recipes at once. This is the
+   ceiling on one request; the client sends more than one batch above it. */
+const MAX_BODY_BATCH = 40;
+
 async function loadRecipeForReader(env, me, recipeId) {
   const row = await env.DB.prepare(
     "SELECT recipe_id, cookbook_id, owner_username, owner_lc, visibility, data, created_at, updated_at, updated_by, locked_by, locked_at " +
@@ -7863,13 +8821,36 @@ function liveLockHolder(row, me) {
   return row.locked_by;
 }
 
+/* The parts of a recipe the box tab needs in order to draw a card and answer
+   a search, lifted out of the blob and kept in columns of their own. The
+   ingredient names are one flat lowercase string rather than a list because
+   nothing does anything with them except look for a substring: the search
+   box used to match on ingredients only because the whole recipe was in
+   memory, and this is what keeps that working once it is not. */
+const MAX_SUMMARY_DESC = 2000;
+const MAX_ING_NAMES = 2000;
+function summaryOf(data) {
+  const d = data || {};
+  const tags = Array.isArray(d.tags)
+    ? d.tags.filter(Boolean).map(t => String(t).trim()).filter(Boolean).slice(0, 60)
+    : [];
+  const names = Array.isArray(d.ingredients)
+    ? d.ingredients.map(i => String((i && i.name) || "").trim()).filter(Boolean)
+    : [];
+  return {
+    description: String(d.description || "").slice(0, MAX_SUMMARY_DESC),
+    tags: JSON.stringify(tags),
+    ingNames: names.join(" ").toLowerCase().slice(0, MAX_ING_NAMES)
+  };
+}
 function validateRecipeData(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new ApiError(400, "The recipe was not readable.");
   const title = cleanString(data.title, 200);
   if (!title) throw new ApiError(400, "The recipe needs a title.");
   const text = JSON.stringify(data);
   if (text.length > MAX_RECIPE_BYTES) throw new ApiError(413, "That recipe is too big to store.");
-  return { title, text };
+  const s = summaryOf(data);
+  return { title, text, description: s.description, tags: s.tags, ingNames: s.ingNames };
 }
 
 /* ================================================================ API === */
@@ -7877,6 +8858,18 @@ function validateRecipeData(data) {
    are created on demand rather than by hand in the D1 console. Cheap: one
    pass per isolate. */
 const LATER_TABLES = [
+  /* Sign-in identity. Held apart from users so the address list can be read
+     on its own without touching anything else, and so a rename or a cookbook
+     move never disturbs it. One address per account, one account per
+     address. */
+  "CREATE TABLE IF NOT EXISTS user_emails ( email_lc TEXT PRIMARY KEY, email TEXT NOT NULL, " +
+    "username_lc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_emails_user ON user_emails(username_lc)",
+  /* One row per signed-in device. The token is the only credential the
+     client holds after sign-in; a Cookbook ID no longer opens anything. */
+  "CREATE TABLE IF NOT EXISTS sessions ( token TEXT PRIMARY KEY, username_lc TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, expires_at TEXT NOT NULL )",
+  "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username_lc)",
   "CREATE TABLE IF NOT EXISTS recipe_marks ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
     "kind TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, " +
     "PRIMARY KEY (cookbook_id, recipe_id, kind) )",
@@ -7950,7 +8943,27 @@ const LATER_TABLES = [
     "cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', " +
     "entry_id TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL )",
   "CREATE INDEX IF NOT EXISTS idx_mdishes_meal ON meal_dishes(meal_id)",
-  "CREATE INDEX IF NOT EXISTS idx_mdishes_entry ON meal_dishes(entry_id)"
+  "CREATE INDEX IF NOT EXISTS idx_mdishes_entry ON meal_dishes(entry_id)",
+  /* One rating per cookbook per recipe, kept apart from the cook log. A
+     household has an opinion about a dish; it has many evenings of cooking
+     it. Tying the two together meant a fourth cook could not be logged
+     without restating the verdict, and the verdict could not be revised
+     without inventing a cook that never happened. */
+  "CREATE TABLE IF NOT EXISTS recipe_ratings ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
+    "rating INTEGER NOT NULL, rated_by TEXT NOT NULL, updated_at TEXT NOT NULL, " +
+    "PRIMARY KEY (cookbook_id, recipe_id) )",
+  "CREATE INDEX IF NOT EXISTS idx_ratings_recipe ON recipe_ratings(recipe_id)",
+  /* One-shot data moves, recorded so they never run twice. The column
+     backfills below are self-describing - an unfilled column is NULL - but
+     moving the old per-entry ratings across is not: rerunning it would
+     resurrect a rating somebody had deliberately cleared. */
+  "CREATE TABLE IF NOT EXISTS migrations ( name TEXT PRIMARY KEY, done_at TEXT NOT NULL )",
+  /* Asking "is there anything left to backfill" used to read every recipe in
+     the database, because tags is not indexed and NULL is not a value an
+     ordinary index can be searched for. Partial, so it holds only the rows
+     that still need filling and is empty - costing nothing to store and
+     nothing to maintain - the moment the backfill finishes. */
+  "CREATE INDEX IF NOT EXISTS idx_recipes_unfilled ON recipes(recipe_id) WHERE tags IS NULL"
 ];
 
 /* What a kitchen is assumed to have until it says otherwise. Seeded on read
@@ -7960,6 +8973,7 @@ const LATER_TABLES = [
 const DEFAULT_EXCLUSIONS = ["Water", "Salt", "Black pepper", "Baking soda", "Ice"];
 const MAX_EXCLUSIONS = 200;
 let schemaReady = false;
+let schemaBooted = false;
 /* community_meals shipped before it had anything to say beyond a name and a
    day. The table is already live, so the two later columns are added rather
    than declared: CREATE TABLE IF NOT EXISTS never runs again once the table
@@ -7967,10 +8981,76 @@ let schemaReady = false;
    has no ADD COLUMN IF NOT EXISTS, and a duplicate column is the expected
    result on every run after the first, so that one error is swallowed and
    anything else is not. */
+/* The three summary columns are what the cupboard tab is built from. They
+   are deliberately nullable rather than NOT NULL DEFAULT '': a NULL is the
+   signal that this row predates the columns and still needs filling from its
+   data blob, and an empty description is a real answer that must not be
+   mistaken for a missing one. */
 const LATER_COLUMNS = [
+  "ALTER TABLE users ADD COLUMN pw_hash TEXT",
+  "ALTER TABLE users ADD COLUMN pw_salt TEXT",
+  "ALTER TABLE users ADD COLUMN pw_updated_at TEXT",
   "ALTER TABLE community_meals ADD COLUMN description TEXT NOT NULL DEFAULT ''",
-  "ALTER TABLE community_meals ADD COLUMN location TEXT NOT NULL DEFAULT ''"
+  "ALTER TABLE community_meals ADD COLUMN location TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE recipes ADD COLUMN description TEXT",
+  "ALTER TABLE recipes ADD COLUMN tags TEXT",
+  "ALTER TABLE recipes ADD COLUMN ing_names TEXT"
 ];
+/* Reading a recipe's data blob to answer "what is this called and what is in
+   it" is the thing the whole change is trying to stop doing on every sync.
+   Once, at rest, is fine; a few thousand at a time keeps a cold start from
+   turning into a minute of parsing, and whatever is left is picked up on the
+   next one. */
+const BACKFILL_CHUNK = 200;
+const BACKFILL_MAX = 2000;
+/* True when there is nothing left to fill. The version stamp waits on that
+   answer: a box big enough to need more than BACKFILL_MAX rows in one pass
+   must be allowed to finish on a later cold start, and stamping early would
+   close the door on it. */
+async function backfillRecipeSummaries(env) {
+  let done = 0;
+  while (done < BACKFILL_MAX) {
+    const rows = (await env.DB.prepare(
+      "SELECT recipe_id, data FROM recipes WHERE tags IS NULL LIMIT " + BACKFILL_CHUNK
+    ).all()).results || [];
+    if (!rows.length) return true;
+    const statements = [];
+    for (const row of rows) {
+      let data = null;
+      try { data = JSON.parse(row.data); } catch (e) { data = {}; }
+      const s = summaryOf(data);
+      statements.push(env.DB.prepare(
+        "UPDATE recipes SET description = ?, tags = ?, ing_names = ? WHERE recipe_id = ?"
+      ).bind(s.description, s.tags, s.ingNames, row.recipe_id));
+    }
+    await env.DB.batch(statements);
+    done += rows.length;
+    if (rows.length < BACKFILL_CHUNK) return true;
+  }
+  return false;
+}
+/* Every rating ever left on a cook log entry, collapsed to one per cookbook:
+   the most recent word a household said about a dish is the word it still
+   stands by. Guarded by the migrations table because a cleared rating is a
+   deletion, and an unguarded rerun would undo it. */
+const RATING_MIGRATION = "ratings-from-cook-log-v1";
+async function backfillRatings(env) {
+  const seen = await env.DB.prepare(
+    "SELECT name FROM migrations WHERE name = ?"
+  ).bind(RATING_MIGRATION).first();
+  if (seen) return;
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO recipe_ratings (cookbook_id, recipe_id, rating, rated_by, updated_at) " +
+    "SELECT u.cookbook_id, c.recipe_id, c.rating, c.username, c.created_at FROM comments c " +
+    "JOIN users u ON u.username_lc = c.username_lc WHERE c.rating BETWEEN 1 AND 5 " +
+    "AND c.created_at = (SELECT MAX(c2.created_at) FROM comments c2 " +
+    "JOIN users u2 ON u2.username_lc = c2.username_lc " +
+    "WHERE c2.recipe_id = c.recipe_id AND u2.cookbook_id = u.cookbook_id AND c2.rating BETWEEN 1 AND 5)"
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO migrations (name, done_at) VALUES (?, ?)"
+  ).bind(RATING_MIGRATION, new Date().toISOString()).run();
+}
 async function addLaterColumns(env) {
   for (const sql of LATER_COLUMNS) {
     try { await env.DB.prepare(sql).run(); }
@@ -7980,11 +9060,58 @@ async function addLaterColumns(env) {
   }
   await env.DB.prepare(VISIBILITY_MIGRATION).run();
 }
+/* ------------------------------------------------------- schema version --
+   The bootstrap below used to run once per isolate, which is not the same
+   thing as once. Every cold start replayed thirty-odd DDL statements, five
+   ALTERs that are expected to fail, an UPDATE across the recipes table and a
+   probe that read every recipe row - to do nothing, because it had all been
+   done months ago. That is a few hundred milliseconds on the unlucky request
+   and a full table scan billed as rows read, repeated for the life of the
+   Worker and growing with the size of the box.
+
+   So it is stamped instead. One row in migrations says which version of the
+   shape the database is already at; if it matches, the bootstrap is skipped
+   outright and a cold start costs a single indexed lookup.
+
+   READ THIS BEFORE ADDING A TABLE, AN INDEX OR A COLUMN: adding it to
+   LATER_TABLES or LATER_COLUMNS is no longer enough on its own. The stamp
+   already in the database will match, the bootstrap will be skipped, and the
+   new thing will never be created. Bump SCHEMA_VERSION in the same change
+   and the next request applies it. */
+const SCHEMA_VERSION = "schema-v3";
+async function schemaStamped(env) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT name FROM migrations WHERE name = ?"
+    ).bind(SCHEMA_VERSION).first();
+    return !!row;
+  } catch (e) {
+    /* No migrations table yet - a database from before any of this. */
+    return false;
+  }
+}
 async function ensureSchema(env) {
   if (schemaReady) return;
-  for (const sql of LATER_TABLES) await env.DB.prepare(sql).run();
-  await addLaterColumns(env);
-  schemaReady = true;
+  if (await schemaStamped(env)) { schemaReady = true; return; }
+  /* The shape only has to be declared once per isolate even when the data
+     move behind it has not finished; replaying the DDL on every request
+     while a large backfill drains would be its own version of the problem
+     this change exists to remove. */
+  if (!schemaBooted) {
+    for (const sql of LATER_TABLES) await env.DB.prepare(sql).run();
+    await addLaterColumns(env);
+    schemaBooted = true;
+  }
+  const drained = await backfillRecipeSummaries(env);
+  await backfillRatings(env);
+  /* Only claim the shape is settled once the backfill actually finished.
+     Until then the next cold start picks up where this one stopped. */
+  if (drained) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO migrations (name, done_at) VALUES (?, ?)"
+    ).bind(SCHEMA_VERSION, new Date().toISOString()).run();
+    schemaReady = true;
+  }
 }
 
 const MARK_KINDS = ["pin", "star", "later"];
@@ -7995,29 +9122,56 @@ const MARK_KINDS = ["pin", "star", "later"];
    a shared dinner is not a private thing between each pair of people at it.
    What crosses that line is deliberately narrow - a household name and a
    dish title. No recipe, no servings, no cookbook contents. */
-async function mealsFor(env, cookbookId) {
-  const mine = (await env.DB.prepare(
-    "SELECT meal_id, status, updated_at FROM meal_guests " +
-    "WHERE cookbook_id = ? AND status != 'declined'"
+const MEAL_GUEST_SEATS_SQL =
+  "SELECT meal_id, status, updated_at FROM meal_guests " +
+  "WHERE cookbook_id = ? AND status != 'declined'";
+/* seats may be handed in already read - the library sync fetches it in the
+   same batch as everything else it needs - so this does not go and ask a
+   second time for something already in hand. */
+async function mealsFor(env, cookbookId, seats) {
+  const mine = seats || (await env.DB.prepare(
+    MEAL_GUEST_SEATS_SQL
   ).bind(cookbookId).all()).results || [];
   if (!mine.length) return { meals: [], cookbooks: [] };
   const ids = mine.map(r => r.meal_id);
   const myStatus = {}, myAt = {};
   for (const r of mine) { myStatus[r.meal_id] = r.status; myAt[r.meal_id] = r.updated_at; }
 
-  const metaRows = (await env.DB.prepare(
-    "SELECT meal_id, owner_cb, title, on_date, at_time, description, location, " +
-    "created_by, created_at, updated_at " +
-    "FROM community_meals WHERE meal_id IN (" + placeholders(ids.length) + ")"
-  ).bind(...ids).all()).results || [];
-  const guestRows = (await env.DB.prepare(
-    "SELECT meal_id, cookbook_id, status, updated_at FROM meal_guests WHERE meal_id IN (" +
-    placeholders(ids.length) + ")"
-  ).bind(...ids).all()).results || [];
-  const dishRows = (await env.DB.prepare(
-    "SELECT dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at " +
-    "FROM meal_dishes WHERE meal_id IN (" + placeholders(ids.length) + ") ORDER BY created_at"
-  ).bind(...ids).all()).results || [];
+  /* Three fan-outs over the same list of meals, so they travel together
+     rather than as three trips to the same place. */
+  const parts = chunked(ids);
+  const meta = [], guests = [], dishes = [];
+  for (const part of parts) {
+    const ph = placeholders(part.length);
+    meta.push(env.DB.prepare(
+      "SELECT meal_id, owner_cb, title, on_date, at_time, description, location, " +
+      "created_by, created_at, updated_at " +
+      "FROM community_meals WHERE meal_id IN (" + ph + ")"
+    ).bind(...part));
+    guests.push(env.DB.prepare(
+      "SELECT meal_id, cookbook_id, status, updated_at FROM meal_guests WHERE meal_id IN (" + ph + ")"
+    ).bind(...part));
+    dishes.push(env.DB.prepare(
+      "SELECT dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at " +
+      "FROM meal_dishes WHERE meal_id IN (" + ph + ") ORDER BY created_at"
+    ).bind(...part));
+  }
+  /* A batch answers in the order it was asked, so the three groups are told
+     apart by where they sit rather than by what they contain. */
+  const res = await env.DB.batch(meta.concat(guests, dishes));
+  const rowsAt = (from, count) => {
+    const out = [];
+    for (let i = from; i < from + count; i++) {
+      for (const row of ((res[i] && res[i].results) || [])) out.push(row);
+    }
+    return out;
+  };
+  const n = parts.length;
+  const metaRows = rowsAt(0, n);
+  const guestRows = rowsAt(n, n);
+  /* Chunking split the ORDER BY, so the order is restored here. */
+  const dishRows = rowsAt(2 * n, n)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
   /* Guest cookbooks need names, and they are not necessarily friends of
      ours, so they are collected here rather than borrowed from the friend
@@ -8269,47 +9423,164 @@ async function handleApi(route, body, env, request) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   await ensureSchema(env);
 
-  /* ---- sign in / create ---- */
-  if (route === "session") {
-    const username = cleanString(body.username, 40);
+  /* ---- create an account ----
+     Three ways in, all through this one door:
+       - on your own: a fresh cookbook is made for you;
+       - joining a household: an existing Cookbook ID with room in it;
+       - claiming: a name and Cookbook ID that already exist together and have
+         never had an address attached. That is the migration path off the old
+         Cookbook-ID-as-password scheme, and it is meant to be removed once
+         everybody who had an account before has been through it. */
+  if (route === "auth/signup") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const username = cleanString(body.name, 40);
+    const email = cleanString(body.email, 160);
+    const emailLc = email.toLowerCase();
+    const clientHash = cleanString(body.clientHash, 80);
+    const wantsJoin = body.joinCookbook === true;
     const cookbookId = cleanString(body.cookbookId, 40).toUpperCase();
+
     if (!USERNAME_RE.test(username)) {
-      throw new ApiError(400, "Usernames are 2-20 characters: letters, numbers, dot, dash or underscore.");
+      throw new ApiError(400, "Names are 2-20 characters: letters, numbers, dot, dash or underscore.");
     }
-    if (!COOKBOOK_RE.test(cookbookId)) {
-      throw new ApiError(400, "A Cookbook ID is 10 characters, letters and numbers only.");
+    if (!EMAIL_RE.test(email)) throw new ApiError(400, "That does not look like an email address.");
+    if (cleanString(body.emailConfirm, 160).toLowerCase() !== emailLc) {
+      throw new ApiError(400, "The two email addresses do not match.");
     }
+    if (!CLIENT_HASH_RE.test(clientHash)) {
+      throw new ApiError(400, "That password could not be read. Try again on a current browser.");
+    }
+    const emailTaken = await env.DB.prepare(
+      "SELECT username_lc FROM user_emails WHERE email_lc = ?"
+    ).bind(emailLc).first();
+    if (emailTaken) {
+      throw new ApiError(409, "There is already an account on that email address. Sign in as an existing user instead.");
+    }
+
+    const nameLc = username.toLowerCase();
     const byName = await env.DB.prepare(
-      "SELECT username, cookbook_id FROM users WHERE username_lc = ?"
-    ).bind(username.toLowerCase()).first();
+      "SELECT username, username_lc, cookbook_id FROM users WHERE username_lc = ?"
+    ).bind(nameLc).first();
+    const now = new Date().toISOString();
+    let finalCookbook = "", created = false, joined = false, claimed = false;
 
-    if (byName) {
-      if (byName.cookbook_id !== cookbookId) {
-        throw new ApiError(409, "That username already belongs to a different cookbook. Check the ID, or pick another name.");
+    if (wantsJoin) {
+      const bucket = "cbtry:" + ip;
+      await attemptGuard(env, bucket, BAD_COOKBOOK_TRIES, "Cookbook IDs tried");
+      if (!COOKBOOK_RE.test(cookbookId)) {
+        await throttleRecordFailure(env, [bucket]);
+        throw new ApiError(400, "A Cookbook ID is 10 characters, letters and numbers only.");
       }
-      return jsonResponse({
-        username: byName.username, cookbookId, created: false, joined: false,
-        members: await countMembers(env, cookbookId)
-      });
+      const existing = await countMembers(env, cookbookId);
+      if (existing === 0) {
+        await throttleRecordFailure(env, [bucket]);
+        throw new ApiError(404, "No cookbook has that ID. Check it with whoever sent it to you.");
+      }
+      if (byName && byName.cookbook_id === cookbookId) {
+        /* The claim. Only ever available to a row with no address on it. */
+        const already = await emailRowFor(env, nameLc);
+        if (already) {
+          throw new ApiError(409, "That name already has an account. Sign in as an existing user instead.");
+        }
+        finalCookbook = cookbookId;
+        claimed = true;
+      } else {
+        if (byName) {
+          throw new ApiError(409, "Somebody already uses that name. Pick another.");
+        }
+        if (existing >= MAX_COOKBOOK_MEMBERS) {
+          throw new ApiError(409, "That cookbook already has " + MAX_COOKBOOK_MEMBERS +
+            " people in it, which is the limit. Ask them to add you as a friend instead.");
+        }
+        finalCookbook = cookbookId;
+        joined = true;
+      }
+    } else {
+      if (byName) throw new ApiError(409, "Somebody already uses that name. Pick another.");
+      for (let tries = 0; tries < 6 && !finalCookbook; tries++) {
+        const candidate = randomFrom(COOKBOOK_ALPHABET, 10);
+        if ((await countMembers(env, candidate)) === 0) finalCookbook = candidate;
+      }
+      if (!finalCookbook) throw new ApiError(500, "Could not start a cookbook just now. Try again.");
+      created = true;
     }
 
-    /* A new username with an existing Cookbook ID joins that cookbook. */
-    const existing = await countMembers(env, cookbookId);
-    if (existing > 0 && !body.confirmJoin) {
-      const map = await membersOf(env, [cookbookId]);
-      const names = map[cookbookId] || [];
-      throw new ApiError(409,
-        "That Cookbook ID already belongs to a cookbook with " + names.join(", ") +
-        " in it. Joining means you can read and edit everything in it, and you will be linked to everyone it is already friends with.",
-        "CONFIRM_JOIN");
+    if (!claimed) {
+      await env.DB.prepare(
+        "INSERT INTO users (username_lc, username, cookbook_id, created_at) VALUES (?, ?, ?, ?)"
+      ).bind(nameLc, username, finalCookbook, now).run();
     }
-
     await env.DB.prepare(
-      "INSERT INTO users (username_lc, username, cookbook_id, created_at) VALUES (?, ?, ?, ?)"
-    ).bind(username.toLowerCase(), username, cookbookId, new Date().toISOString()).run();
+      "INSERT INTO user_emails (email_lc, email, username_lc, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(emailLc, email, nameLc, now, now).run();
+    await setPassword(env, nameLc, clientHash);
+    const token = await startSession(env, nameLc);
     return jsonResponse({
-      username, cookbookId, created: existing === 0, joined: existing > 0, members: existing + 1
+      token, username: (byName && claimed) ? byName.username : username,
+      cookbookId: finalCookbook, email,
+      created, joined, claimed, members: await countMembers(env, finalCookbook)
     });
+  }
+
+  /* ---- sign in ----
+     One message for a wrong address and a wrong password alike, so the reply
+     never says which addresses have accounts on them. */
+  if (route === "auth/login") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const email = cleanString(body.email, 160).toLowerCase();
+    const clientHash = cleanString(body.clientHash, 80);
+    const wrong = new ApiError(401, "That email address and password do not go together.");
+    if (!EMAIL_RE.test(email) || !CLIENT_HASH_RE.test(clientHash)) throw wrong;
+    const row = await env.DB.prepare(
+      "SELECT e.email AS email, u.username AS username, u.username_lc AS username_lc, " +
+      "u.cookbook_id AS cookbook_id, u.pw_hash AS pw_hash, u.pw_salt AS pw_salt " +
+      "FROM user_emails e JOIN users u ON u.username_lc = e.username_lc WHERE e.email_lc = ?"
+    ).bind(email).first();
+    if (!row || !row.pw_hash || !row.pw_salt) {
+      await throttleRecordFailure(env, ["ip:" + ip]);
+      throw wrong;
+    }
+    if (!sameSecret(await serverHash(row.pw_salt, clientHash), row.pw_hash)) {
+      await throttleRecordFailure(env, ["ip:" + ip]);
+      throw wrong;
+    }
+    const token = await startSession(env, row.username_lc);
+    return jsonResponse({
+      token, username: row.username, cookbookId: row.cookbook_id, email: row.email,
+      members: await countMembers(env, row.cookbook_id)
+    });
+  }
+
+  /* ---- sign out ----
+     Answers the same way whether or not the token was real, so signing out
+     twice is not an error worth showing anybody. */
+  if (route === "auth/logout") {
+    const token = cleanString(body.token, 80);
+    if (token) await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
+    return jsonResponse({ signedOut: true });
+  }
+
+  /* ---- admin: hand somebody a temporary password ----
+     There is no mail out of here, so recovery is a person writing in from the
+     address on their account and being given something to sign in with. The
+     browser derives the hash from that address and the temporary password
+     exactly as the sign-in screen would, so this route never sees either. */
+  if (route === "admin/password") {
+    const token = cleanString(body.token, 200);
+    if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+      throw new ApiError(403, "That is not the admin token.");
+    }
+    const email = cleanString(body.email, 160).toLowerCase();
+    const clientHash = cleanString(body.clientHash, 80);
+    if (!EMAIL_RE.test(email)) throw new ApiError(400, "That does not look like an email address.");
+    if (!CLIENT_HASH_RE.test(clientHash)) throw new ApiError(400, "That password could not be read.");
+    const row = await env.DB.prepare(
+      "SELECT username_lc FROM user_emails WHERE email_lc = ?"
+    ).bind(email).first();
+    if (!row) throw new ApiError(404, "No account on that address.");
+    await setPassword(env, row.username_lc, clientHash);
+    await dropOtherSessions(env, row.username_lc, "");
+    return jsonResponse({ reset: true, username: row.username_lc });
   }
 
   /* ---- a shared link, opened by anybody ----
@@ -8345,25 +9616,130 @@ async function handleApi(route, body, env, request) {
 
   /* ---- everything visible to me ---- */
   if (route === "library") {
-    const friendCbs = await friendCookbooks(env, me.cookbookId);
+    /* A sync used to be nineteen statements sent one after another, each
+       waiting on the answer to the last before it was even dispatched.
+       Almost none of them actually depended on each other - they only
+       depended on knowing which cookbook was asking, which is settled before
+       any of them run - so the wait was the round trip and nothing else. A
+       D1 database serves one query at a time whatever happens, so this does
+       not make the database do less work; it stops the request paying the
+       distance to it fourteen times over.
 
-    const pendingIn = (await env.DB.prepare(
-      "SELECT requester_cb, requested_by, created_at FROM friendships " +
-      "WHERE addressee_cb = ? AND status = 'pending' ORDER BY created_at"
-    ).bind(me.cookbookId).all()).results || [];
-    const pendingOut = (await env.DB.prepare(
-      "SELECT addressee_cb, created_at FROM friendships " +
-      "WHERE requester_cb = ? AND status = 'pending' ORDER BY created_at"
-    ).bind(me.cookbookId).all()).results || [];
-    const declinedRows = (await env.DB.prepare(
-      "SELECT requester_cb, requested_by FROM friendships " +
-      "WHERE addressee_cb = ? AND status = 'declined'"
-    ).bind(me.cookbookId).all()).results || [];
+       Three things genuinely do have to wait, and still do: the meals need
+       the seats before they know which meals to read, the household names
+       need the friend and guest lists before they know whose names to ask
+       for, and both of those come from this batch. */
+    const reach = visibleRecipeClause(me.cookbookId, "");
+    const voices = voicesClause(me.cookbookId);
+    const rateReach = visibleRecipeClause(me.cookbookId, "r.");
+    const cookReach = visibleRecipeClause(me.cookbookId, "r.");
+    const feedSince = new Date(Date.now() - COOK_FEED_DAYS * 86400000).toISOString();
+
+    const first = await env.DB.batch([
+      /* Accepted links, with when each was made. The friend list and the
+         reach stamp are both read off this, so it is asked once. */
+      env.DB.prepare(
+        "SELECT CASE WHEN requester_cb = ? THEN addressee_cb ELSE requester_cb END AS cb, updated_at " +
+        "FROM friendships WHERE status = 'accepted' AND (requester_cb = ? OR addressee_cb = ?)"
+      ).bind(me.cookbookId, me.cookbookId, me.cookbookId),
+      env.DB.prepare(
+        "SELECT requester_cb, requested_by, created_at FROM friendships " +
+        "WHERE addressee_cb = ? AND status = 'pending' ORDER BY created_at"
+      ).bind(me.cookbookId),
+      env.DB.prepare(
+        "SELECT addressee_cb, created_at FROM friendships " +
+        "WHERE requester_cb = ? AND status = 'pending' ORDER BY created_at"
+      ).bind(me.cookbookId),
+      env.DB.prepare(
+        "SELECT requester_cb, requested_by FROM friendships " +
+        "WHERE addressee_cb = ? AND status = 'declined'"
+      ).bind(me.cookbookId),
+      env.DB.prepare(MEAL_GUEST_SEATS_SQL).bind(me.cookbookId),
+      /* Nothing here reads the data blob. A card needs a name, a line of
+         description, its tags and two numbers, and that is exactly what
+         comes back - so opening the app costs one small row per recipe
+         instead of every ingredient and every step of every recipe anyone
+         can see. */
+      env.DB.prepare(
+        "SELECT recipe_id, cookbook_id, owner_username, visibility, title, description, tags, " +
+        "ing_names, created_at, updated_at, updated_by FROM recipes WHERE " + reach.clause
+      ).bind(...reach.binds),
+      /* Ratings and cooks are visible between linked cookbooks, so a new
+         member of a cookbook can see everything that cookbook could already
+         see. Both arrive as totals rather than as rows: the box tab wants an
+         average and a count, and the entries behind them are fetched only
+         when a recipe is actually opened. */
+      env.DB.prepare(
+        "SELECT rt.recipe_id, rt.cookbook_id, rt.rating FROM recipe_ratings rt " +
+        "JOIN recipes r ON r.recipe_id = rt.recipe_id " +
+        "WHERE (" + rateReach.clause + ") AND rt.cookbook_id IN (" + voices.sql + ")"
+      ).bind(...rateReach.binds, ...voices.binds),
+      env.DB.prepare(
+        "SELECT c.recipe_id, COUNT(*) AS n, MAX(c.cooked_on) AS last, " +
+        "SUM(CASE WHEN u.cookbook_id = ? THEN 1 ELSE 0 END) AS ourn " +
+        "FROM comments c JOIN recipes r ON r.recipe_id = c.recipe_id " +
+        "JOIN users u ON u.username_lc = c.username_lc " +
+        "WHERE (" + cookReach.clause + ") AND u.cookbook_id IN (" + voices.sql + ") GROUP BY c.recipe_id"
+      ).bind(me.cookbookId, ...cookReach.binds, ...voices.binds),
+      /* The only cook log entries that still travel with a sync: recent
+         cooks by somebody else on a recipe of ours, which is the one thing
+         the notifications page cannot work out for itself. Everything older
+         has already been read once and is a scroll through the recipe
+         away. */
+      env.DB.prepare(
+        "SELECT c.comment_id, c.recipe_id, c.username, c.comment, c.cooked_on, c.created_at " +
+        "FROM comments c JOIN recipes r ON r.recipe_id = c.recipe_id " +
+        "JOIN users u ON u.username_lc = c.username_lc " +
+        "WHERE r.cookbook_id = ? AND u.cookbook_id IN (" + voices.sql + ") AND c.username_lc != ? " +
+        "AND c.created_at >= ? ORDER BY c.created_at DESC LIMIT " + COOK_FEED_MAX
+      ).bind(me.cookbookId, ...voices.binds, me.usernameLc, feedSince),
+      /* Marks belong to the cookbook, not the person: a household stars once. */
+      env.DB.prepare(
+        "SELECT recipe_id, kind FROM recipe_marks WHERE cookbook_id = ?"
+      ).bind(me.cookbookId),
+      /* Who our own private recipes have been handed to. */
+      env.DB.prepare(
+        "SELECT s.recipe_id, s.cookbook_id FROM recipe_shares s " +
+        "JOIN recipes r ON r.recipe_id = s.recipe_id WHERE r.cookbook_id = ?"
+      ).bind(me.cookbookId),
+      /* The whole calendar, and the shelf of shopping lists without their
+         contents. A plan is a few dozen rows at most, so it rides along; a
+         list's items are fetched when the list is opened, which keeps a year
+         of shopping out of every sync. */
+      env.DB.prepare(
+        "SELECT entry_id, recipe_id, title, on_date, servings, created_by, created_at " +
+        "FROM schedule_entries WHERE cookbook_id = ? ORDER BY on_date, created_at"
+      ).bind(me.cookbookId),
+      env.DB.prepare(
+        "SELECT list_id, label, start_date, end_date, item_count, created_by, created_at, updated_at " +
+        "FROM grocery_lists WHERE cookbook_id = ? ORDER BY created_at DESC"
+      ).bind(me.cookbookId),
+      env.DB.prepare(
+        "SELECT exclusions FROM cookbook_prefs WHERE cookbook_id = ?"
+      ).bind(me.cookbookId)
+    ]);
+    const at = (i) => (first[i] && first[i].results) || [];
+    const sinceRows = at(0);
+    const pendingIn = at(1);
+    const pendingOut = at(2);
+    const declinedRows = at(3);
+    const mealSeats = at(4);
+    const recipeRows = at(5);
+    const ratingRows = at(6);
+    const cookRows = at(7);
+    const cookFeedRows = at(8);
+    const markRows = at(9);
+    const shareRows = at(10);
+    const schedRows = at(11);
+    const listRows = at(12);
+    const prefRow = at(13)[0] || null;
+
+    const friendCbs = sinceRows.map(r => r.cb);
 
     /* Guest cookbooks on a shared meal need names too, and they are not
        necessarily friends of ours, so they are folded into the same lookup
        rather than fetched separately. */
-    const mealRaw = await mealsFor(env, me.cookbookId);
+    const mealRaw = await mealsFor(env, me.cookbookId, mealSeats);
 
     const memberMap = await membersOf(env, [me.cookbookId].concat(
       friendCbs,
@@ -8380,99 +9756,70 @@ async function handleApi(route, body, env, request) {
        purpose. Meals need a wider one, so they get their own reader. */
     const mealLabel = (cb) => labelFor[cb] || householdLabel(memberMap[cb] || []) || "Someone";
 
-    let sql = "SELECT recipe_id, cookbook_id, owner_username, visibility, data, created_at, updated_at, updated_by " +
-      "FROM recipes WHERE cookbook_id = ?";
-    const binds = [me.cookbookId];
-    if (friendCbs.length) {
-      sql += " OR (visibility = 'friends' AND cookbook_id IN (" + placeholders(friendCbs.length) + "))";
-      binds.push(...friendCbs);
-    }
-    /* A recipe handed to this cookbook specifically - which is what the
-       selective tier is - or one they pinned from a share link. */
-    sql += " OR recipe_id IN (SELECT recipe_id FROM recipe_shares WHERE cookbook_id = ?)";
-    binds.push(me.cookbookId);
-    sql += " OR recipe_id IN (SELECT recipe_id FROM link_grants WHERE cookbook_id = ?)";
-    binds.push(me.cookbookId);
-    const recipeRows = (await env.DB.prepare(sql).bind(...binds).all()).results || [];
-
     const recipes = recipeRows.map(row => {
-      let data = null;
-      try { data = JSON.parse(row.data); } catch (e) { data = { title: "Unreadable recipe" }; }
+      let tags = [];
+      try { const p = JSON.parse(row.tags || "[]"); if (Array.isArray(p)) tags = p; } catch (e) { tags = []; }
       return {
         recipeId: row.recipe_id,
         owner: row.owner_username,
         household: labelFor[row.cookbook_id] || row.owner_username,
         ours: row.cookbook_id === me.cookbookId,
         visibility: row.visibility,
+        title: row.title || "Untitled recipe",
+        description: row.description || "",
+        tags,
+        ingNames: row.ing_names || "",
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        updatedBy: row.updated_by || row.owner_username,
-        data
+        updatedBy: row.updated_by || row.owner_username
       };
     });
 
-    /* Comments are visible between linked cookbooks, so a new member of a
-       cookbook can see everything that cookbook could already see. */
-    const voices = [me.cookbookId].concat(friendCbs);
-    const csql = "SELECT c.comment_id, c.recipe_id, c.username, c.rating, c.comment, c.cooked_on, c.created_at " +
-      "FROM comments c JOIN recipes r ON r.recipe_id = c.recipe_id " +
-      "JOIN users u ON u.username_lc = c.username_lc " +
-      "WHERE (r.cookbook_id = ?" +
-      (friendCbs.length ? " OR (r.visibility = 'friends' AND r.cookbook_id IN (" + placeholders(friendCbs.length) + "))" : "") +
-      ") AND u.cookbook_id IN (" + placeholders(voices.length) + ") ORDER BY c.cooked_on DESC";
-    const cbinds = [me.cookbookId].concat(friendCbs, voices);
-    const commentRows = (await env.DB.prepare(csql).bind(...cbinds).all()).results || [];
-    const comments = {};
-    for (const c of commentRows) {
-      (comments[c.recipe_id] = comments[c.recipe_id] || []).push({
-        commentId: c.comment_id, username: c.username, rating: c.rating,
-        comment: c.comment, cookedOn: c.cooked_on, createdAt: c.created_at
-      });
+    const ratings = {};
+    for (const row of ratingRows) {
+      const rec = ratings[row.recipe_id] || (ratings[row.recipe_id] = { sum: 0, count: 0, mine: 0 });
+      rec.sum += Number(row.rating) || 0;
+      rec.count++;
+      if (row.cookbook_id === me.cookbookId) rec.mine = Number(row.rating) || 0;
+    }
+    for (const id of Object.keys(ratings)) {
+      const rec = ratings[id];
+      ratings[id] = { avg: rec.count ? rec.sum / rec.count : null, count: rec.count, mine: rec.mine };
     }
 
-    /* Marks belong to the cookbook, not the person: a household stars once. */
-    const markRows = (await env.DB.prepare(
-      "SELECT recipe_id, kind FROM recipe_marks WHERE cookbook_id = ?"
-    ).bind(me.cookbookId).all()).results || [];
+    const cooks = {};
+    for (const row of cookRows) {
+      cooks[row.recipe_id] = {
+        count: Number(row.n) || 0,
+        ours: Number(row.ourn) || 0,
+        last: row.last || null
+      };
+    }
+
+    const cookFeed = cookFeedRows.map(c => ({
+      commentId: c.comment_id, recipeId: c.recipe_id, username: c.username,
+      comment: c.comment, cookedOn: c.cooked_on, createdAt: c.created_at
+    }));
+
     const marks = { pin: [], star: [], later: [] };
     for (const m of markRows) if (marks[m.kind]) marks[m.kind].push(m.recipe_id);
 
-    /* Who our own private recipes have been handed to. */
-    const shareRows = (await env.DB.prepare(
-      "SELECT s.recipe_id, s.cookbook_id FROM recipe_shares s " +
-      "JOIN recipes r ON r.recipe_id = s.recipe_id WHERE r.cookbook_id = ?"
-    ).bind(me.cookbookId).all()).results || [];
     const shares = {};
     for (const row of shareRows) {
       const label = labelFor[row.cookbook_id];
       if (label) (shares[row.recipe_id] = shares[row.recipe_id] || []).push(label);
     }
 
-    /* The whole calendar, and the shelf of shopping lists without their
-       contents. A plan is a few dozen rows at most, so it rides along; a
-       list's items are fetched when the list is opened, which keeps a year
-       of shopping out of every sync. */
-    const schedRows = (await env.DB.prepare(
-      "SELECT entry_id, recipe_id, title, on_date, servings, created_by, created_at " +
-      "FROM schedule_entries WHERE cookbook_id = ? ORDER BY on_date, created_at"
-    ).bind(me.cookbookId).all()).results || [];
     const schedule = schedRows.map(row => ({
       entryId: row.entry_id, recipeId: row.recipe_id, title: row.title,
       date: row.on_date, servings: row.servings, by: row.created_by, createdAt: row.created_at
     }));
 
-    const listRows = (await env.DB.prepare(
-      "SELECT list_id, label, start_date, end_date, item_count, created_by, created_at, updated_at " +
-      "FROM grocery_lists WHERE cookbook_id = ? ORDER BY created_at DESC"
-    ).bind(me.cookbookId).all()).results || [];
     const groceryLists = listRows.map(row => ({
       listId: row.list_id, label: row.label, startDate: row.start_date, endDate: row.end_date,
       itemCount: row.item_count, by: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at
     }));
 
-    const prefRow = await env.DB.prepare(
-      "SELECT exclusions FROM cookbook_prefs WHERE cookbook_id = ?"
-    ).bind(me.cookbookId).first();
     let exclusions = DEFAULT_EXCLUSIONS.slice();
     if (prefRow) {
       try {
@@ -8483,11 +9830,8 @@ async function handleApi(route, body, env, request) {
 
     const mates = (memberMap[me.cookbookId] || []).filter(n => n.toLowerCase() !== me.usernameLc);
     /* When each link was made. The app folds everything a friend had already
-       shared before that moment into a single piece of news. */
-    const sinceRows = (await env.DB.prepare(
-      "SELECT CASE WHEN requester_cb = ? THEN addressee_cb ELSE requester_cb END AS cb, updated_at " +
-      "FROM friendships WHERE status = 'accepted' AND (requester_cb = ? OR addressee_cb = ?)"
-    ).bind(me.cookbookId, me.cookbookId, me.cookbookId).all()).results || [];
+       shared before that moment into a single piece of news. Same rows the
+       friend list was read from, so it is not asked for twice. */
     const sinceFor = {};
     for (const row of sinceRows) sinceFor[row.cb] = row.updated_at;
 
@@ -8498,8 +9842,11 @@ async function handleApi(route, body, env, request) {
 
     return jsonResponse({
       me: { username: me.username, cookbookId: me.cookbookId, household: labelFor[me.cookbookId] },
+      reach: reachStamp(sinceRows.map(r => r.cb + "@" + r.updated_at)),
       recipes,
-      comments,
+      ratings,
+      cooks,
+      cookFeed,
       marks,
       shares,
       schedule,
@@ -9037,6 +10384,70 @@ async function handleApi(route, body, env, request) {
     return jsonResponse({ recipeId, sharedWith: wanted.length });
   }
 
+  /* ---- change password ---- */
+  if (route === "account/password") {
+    const current = cleanString(body.currentClientHash, 80);
+    const next = cleanString(body.newClientHash, 80);
+    if (!CLIENT_HASH_RE.test(current) || !CLIENT_HASH_RE.test(next)) {
+      throw new ApiError(400, "Those passwords could not be read. Try again on a current browser.");
+    }
+    const row = await env.DB.prepare(
+      "SELECT pw_hash, pw_salt FROM users WHERE username_lc = ?"
+    ).bind(me.usernameLc).first();
+    if (!row || !row.pw_hash || !sameSecret(await serverHash(row.pw_salt, current), row.pw_hash)) {
+      throw new ApiError(403, "That is not your current password.");
+    }
+    if (sameSecret(current, next)) {
+      throw new ApiError(400, "The new password is the same as the old one.");
+    }
+    await setPassword(env, me.usernameLc, next);
+    await dropOtherSessions(env, me.usernameLc, me.token);
+    return jsonResponse({ changed: true });
+  }
+
+  /* ---- change email ----
+     The password travels hashed against the OLD address, because that is the
+     salt it was set with; the new one is only recorded once it has been
+     proved the old one belongs to whoever is asking. */
+  if (route === "account/email") {
+    const current = cleanString(body.currentEmail, 160).toLowerCase();
+    const next = cleanString(body.newEmail, 160);
+    const nextLc = next.toLowerCase();
+    const clientHash = cleanString(body.clientHash, 80);
+    if (!CLIENT_HASH_RE.test(clientHash)) {
+      throw new ApiError(400, "That password could not be read. Try again on a current browser.");
+    }
+    if (!EMAIL_RE.test(next)) throw new ApiError(400, "That does not look like an email address.");
+    const mine = await emailRowFor(env, me.usernameLc);
+    if (!mine || mine.email_lc !== current) {
+      throw new ApiError(403, "That is not the email address on this account.");
+    }
+    if (nextLc === current) throw new ApiError(400, "That is already your email address.");
+    const row = await env.DB.prepare(
+      "SELECT pw_hash, pw_salt FROM users WHERE username_lc = ?"
+    ).bind(me.usernameLc).first();
+    if (!row || !row.pw_hash || !sameSecret(await serverHash(row.pw_salt, clientHash), row.pw_hash)) {
+      throw new ApiError(403, "That password is not right.");
+    }
+    const taken = await env.DB.prepare(
+      "SELECT username_lc FROM user_emails WHERE email_lc = ?"
+    ).bind(nextLc).first();
+    if (taken) throw new ApiError(409, "There is already an account on that email address.");
+    await env.DB.prepare(
+      "UPDATE user_emails SET email_lc = ?, email = ?, updated_at = ? WHERE username_lc = ?"
+    ).bind(nextLc, next, new Date().toISOString(), me.usernameLc).run();
+    /* The address is half the password salt, so every stored hash for this
+       account is now meaningless. The client re-derives against the new
+       address and sends it in the same breath. */
+    const rehash = cleanString(body.newClientHash, 80);
+    if (!CLIENT_HASH_RE.test(rehash)) {
+      throw new ApiError(400, "That password could not be re-read for the new address.");
+    }
+    await setPassword(env, me.usernameLc, rehash);
+    await dropOtherSessions(env, me.usernameLc, me.token);
+    return jsonResponse({ changed: true, email: next });
+  }
+
   /* ---- change display name ----
      The username is the key everything else points at, so a rename has to
      travel through every table that stores it. Cookbook membership, and so
@@ -9056,12 +10467,21 @@ async function handleApi(route, body, env, request) {
     }
     await env.DB.prepare("UPDATE users SET username = ?, username_lc = ? WHERE username_lc = ?")
       .bind(next, nextLc, oldLc).run();
+    /* Both of these point at the name rather than at a row id, so a rename
+       that skipped them would strand the account's address and sign every
+       device out at once. */
+    await env.DB.prepare("UPDATE user_emails SET username_lc = ? WHERE username_lc = ?")
+      .bind(nextLc, oldLc).run();
+    await env.DB.prepare("UPDATE sessions SET username_lc = ? WHERE username_lc = ?")
+      .bind(nextLc, oldLc).run();
     await env.DB.prepare("UPDATE recipes SET owner_username = ?, owner_lc = ? WHERE owner_lc = ?")
       .bind(next, nextLc, oldLc).run();
     await env.DB.prepare("UPDATE recipes SET updated_by = ? WHERE updated_by = ?").bind(next, oldName).run();
     await env.DB.prepare("UPDATE recipes SET locked_by = ? WHERE locked_by = ?").bind(next, oldName).run();
     await env.DB.prepare("UPDATE comments SET username = ?, username_lc = ? WHERE username_lc = ?")
       .bind(next, nextLc, oldLc).run();
+    await env.DB.prepare("UPDATE recipe_ratings SET rated_by = ? WHERE rated_by = ?")
+      .bind(next, oldName).run();
     await env.DB.prepare("UPDATE friendships SET requested_by = ? WHERE requested_by = ?")
       .bind(next, oldName).run();
     await env.DB.prepare("UPDATE friendships SET responded_by = ? WHERE responded_by = ?")
@@ -9095,8 +10515,8 @@ async function handleApi(route, body, env, request) {
       changes.push({ title: row.title, before: before, after: after });
       if (apply) {
         data.tags = after;
-        await env.DB.prepare("UPDATE recipes SET data = ? WHERE recipe_id = ?")
-          .bind(JSON.stringify(data), row.recipe_id).run();
+        await env.DB.prepare("UPDATE recipes SET data = ?, tags = ? WHERE recipe_id = ?")
+          .bind(JSON.stringify(data), JSON.stringify(after), row.recipe_id).run();
       }
     }
     return jsonResponse({
@@ -9109,7 +10529,7 @@ async function handleApi(route, body, env, request) {
   if (route === "recipe/save") {
     const visibility = VISIBILITIES.indexOf(body.visibility) >= 0 ? body.visibility : null;
     if (!visibility) throw new ApiError(400, "Choose private or shared with friends.");
-    const { title, text } = validateRecipeData(body.data);
+    const { title, text, description, tags, ingNames } = validateRecipeData(body.data);
     const now = new Date().toISOString();
 
     if (body.recipeId) {
@@ -9136,18 +10556,20 @@ async function handleApi(route, body, env, request) {
       }
 
       await env.DB.prepare(
-        "UPDATE recipes SET data = ?, title = ?, visibility = ?, updated_at = ?, updated_by = ?, " +
+        "UPDATE recipes SET data = ?, title = ?, description = ?, tags = ?, ing_names = ?, " +
+        "visibility = ?, updated_at = ?, updated_by = ?, " +
         "locked_by = NULL, locked_at = NULL WHERE recipe_id = ?"
-      ).bind(text, title, visibility, now, me.username, String(body.recipeId)).run();
+      ).bind(text, title, description, tags, ingNames, visibility, now, me.username, String(body.recipeId)).run();
       await applyVisibilityReach(env, String(body.recipeId), visibility);
       return jsonResponse({ recipeId: String(body.recipeId), updatedAt: now });
     }
 
     const recipeId = newRecipeId();
     await env.DB.prepare(
-      "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, data, created_at, updated_at, updated_by) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, visibility, title, text, now, now, me.username).run();
+      "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, description, tags, ing_names, data, created_at, updated_at, updated_by) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, visibility, title,
+      description, tags, ingNames, text, now, now, me.username).run();
     return jsonResponse({ recipeId, updatedAt: now });
   }
 
@@ -9211,16 +10633,16 @@ async function handleApi(route, body, env, request) {
     try { found = await loadRecipeForReader(env, me, id); }
     catch (e) { return jsonResponse({ gone: true }); }
 
-    const voices = [me.cookbookId].concat(await friendCookbooks(env, me.cookbookId));
+    const voices = voicesClause(me.cookbookId);
     const countRow = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM comments c JOIN users u ON u.username_lc = c.username_lc " +
-      "WHERE c.recipe_id = ? AND u.cookbook_id IN (" + placeholders(voices.length) + ")"
-    ).bind(id, ...voices).first();
+      "WHERE c.recipe_id = ? AND u.cookbook_id IN (" + voices.sql + ")"
+    ).bind(id, ...voices.binds).first();
     const lastRow = await env.DB.prepare(
       "SELECT c.username FROM comments c JOIN users u ON u.username_lc = c.username_lc " +
-      "WHERE c.recipe_id = ? AND u.cookbook_id IN (" + placeholders(voices.length) + ") " +
+      "WHERE c.recipe_id = ? AND u.cookbook_id IN (" + voices.sql + ") " +
       "ORDER BY c.created_at DESC LIMIT 1"
-    ).bind(id, ...voices).first();
+    ).bind(id, ...voices.binds).first();
 
     return jsonResponse({
       updatedAt: found.row.updated_at,
@@ -9241,24 +10663,36 @@ async function handleApi(route, body, env, request) {
     const statements = [];
     let count = 0;
     for (const item of incoming) {
-      const { title, text } = validateRecipeData(item && item.data ? item.data : item && item.body);
+      const { title, text, description, tags, ingNames } =
+        validateRecipeData(item && item.data ? item.data : item && item.body);
       const recipeId = newRecipeId();
       statements.push(env.DB.prepare(
-        "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, data, created_at, updated_at, updated_by) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, visibility, title, text, now, now, me.username));
+        "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, description, tags, ing_names, data, created_at, updated_at, updated_by) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, visibility, title,
+        description, tags, ingNames, text, now, now, me.username));
       count++;
-      /* An imported file may carry the cook log from an older export. */
+      /* An imported file may carry the cook log from an older export. A cook
+         is a date, so an entry with no rating on it is still an evening that
+         happened; only a rating that was actually written is carried across,
+         and it lands on the ratings table rather than on the entry. */
       const log = Array.isArray(item.cookLog) ? item.cookLog.slice(0, 200) : [];
+      let lastRating = 0;
       for (const entry of log) {
-        const rating = Math.min(5, Math.max(1, Math.round(Number(entry && entry.rating) || 0)));
-        if (!rating) continue;
+        const rating = Math.min(5, Math.max(0, Math.round(Number(entry && entry.rating) || 0)));
+        if (rating) lastRating = rating;
         statements.push(env.DB.prepare(
           "INSERT INTO comments (comment_id, recipe_id, username_lc, username, rating, comment, cooked_on, created_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        ).bind(newCommentId(), recipeId, me.usernameLc, me.username, rating,
+          "VALUES (?, ?, ?, ?, 0, ?, ?, ?)"
+        ).bind(newCommentId(), recipeId, me.usernameLc, me.username,
           cleanString(entry.notes || entry.comment, MAX_COMMENT_CHARS),
           cleanString(entry.date, 30) || now.slice(0, 10), now));
+      }
+      if (lastRating) {
+        statements.push(env.DB.prepare(
+          "INSERT OR REPLACE INTO recipe_ratings (cookbook_id, recipe_id, rating, rated_by, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?)"
+        ).bind(me.cookbookId, recipeId, lastRating, me.username, now));
       }
     }
     await env.DB.batch(statements);
@@ -9293,6 +10727,7 @@ async function handleApi(route, body, env, request) {
     }
     await env.DB.batch([
       env.DB.prepare("DELETE FROM comments WHERE recipe_id = ?").bind(recipeId),
+      env.DB.prepare("DELETE FROM recipe_ratings WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM recipe_marks WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM pending_pins WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM recipe_shares WHERE recipe_id = ?").bind(recipeId),
@@ -9358,27 +10793,106 @@ async function handleApi(route, body, env, request) {
     let data;
     try { data = JSON.parse(found.row.data); } catch (e) { throw new ApiError(400, "That recipe could not be copied."); }
     data.mergedFrom = { username: found.row.owner_username, date: new Date().toISOString().slice(0, 10) };
-    const { title, text } = validateRecipeData(data);
+    const { title, text, description, tags, ingNames } = validateRecipeData(data);
     const now = new Date().toISOString();
     const recipeId = newRecipeId();
     await env.DB.prepare(
-      "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, data, created_at, updated_at, updated_by) " +
-      "VALUES (?, ?, ?, ?, 'private', ?, ?, ?, ?, ?)"
-    ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, title, text, now, now, me.username).run();
+      "INSERT INTO recipes (recipe_id, cookbook_id, owner_username, owner_lc, visibility, title, description, tags, ing_names, data, created_at, updated_at, updated_by) " +
+      "VALUES (?, ?, ?, ?, 'private', ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(recipeId, me.cookbookId, me.username, me.usernameLc, title,
+      description, tags, ingNames, text, now, now, me.username).run();
     return jsonResponse({ recipeId });
   }
 
-  /* ---- cook log entries (rating required, comment optional) ---- */
+  /* ---- one recipe, in full ----
+     The other half of the slimmed-down library: everything the card left
+     behind, fetched when somebody actually opens the recipe. The cook log
+     comes with it, because the only place it is ever read is here. */
+  if (route === "recipe/body") {
+    const found = await loadRecipeForReader(env, me, String(body.recipeId || ""));
+    let data;
+    try { data = JSON.parse(found.row.data); } catch (e) { throw new ApiError(500, "That recipe could not be read."); }
+    const voices = voicesClause(me.cookbookId);
+    const logRows = (await env.DB.prepare(
+      "SELECT c.comment_id, c.username, c.username_lc, c.comment, c.cooked_on, c.created_at " +
+      "FROM comments c JOIN users u ON u.username_lc = c.username_lc " +
+      "WHERE c.recipe_id = ? AND u.cookbook_id IN (" + voices.sql + ") " +
+      "ORDER BY c.cooked_on DESC, c.created_at DESC"
+    ).bind(found.row.recipe_id, ...voices.binds).all()).results || [];
+    return jsonResponse({
+      recipeId: found.row.recipe_id,
+      updatedAt: found.row.updated_at,
+      data,
+      log: logRows.map(c => ({
+        commentId: c.comment_id, username: c.username, mine: c.username_lc === me.usernameLc,
+        comment: c.comment, cookedOn: c.cooked_on, createdAt: c.created_at
+      }))
+    });
+  }
+
+  /* ---- several recipes, in full, with no cook logs ----
+     What a shopping list and an export need: ingredients in bulk and nothing
+     else. Visibility is applied in the statement rather than per recipe, so
+     asking for something out of reach returns fewer rows rather than an
+     error - the caller is working from its own library listing and a recipe
+     can be unshared between the listing and the request. */
+  if (route === "recipe/bodies") {
+    const ids = Array.isArray(body.recipeIds)
+      ? body.recipeIds.map(x => String(x || "")).filter(Boolean).slice(0, MAX_BODY_BATCH) : [];
+    if (!ids.length) return jsonResponse({ bodies: [] });
+    const reach = visibleRecipeClause(me.cookbookId, "");
+    const rows = (await env.DB.prepare(
+      "SELECT recipe_id, data, updated_at FROM recipes WHERE recipe_id IN (" +
+      placeholders(ids.length) + ") AND (" + reach.clause + ")"
+    ).bind(...ids, ...reach.binds).all()).results || [];
+    const bodies = [];
+    for (const row of rows) {
+      let data = null;
+      try { data = JSON.parse(row.data); } catch (e) { continue; }
+      bodies.push({ recipeId: row.recipe_id, updatedAt: row.updated_at, data });
+    }
+    return jsonResponse({ bodies });
+  }
+
+  /* ---- one rating per cookbook ----
+     A verdict, not an event: writing it again replaces it, and zero clears
+     it. Only a kitchen that has actually cooked the thing gets to have an
+     opinion recorded, which is checked here and not only in the interface. */
+  if (route === "recipe/rate") {
+    const rating = Math.round(Number(body.rating) || 0);
+    if (!(rating >= 0 && rating <= 5)) throw new ApiError(400, "Pick a rating from 1 to 5.");
+    const found = await loadRecipeForReader(env, me, String(body.recipeId || ""));
+    const recipeId = found.row.recipe_id;
+    if (rating === 0) {
+      await env.DB.prepare(
+        "DELETE FROM recipe_ratings WHERE cookbook_id = ? AND recipe_id = ?"
+      ).bind(me.cookbookId, recipeId).run();
+      return jsonResponse({ ok: true, rating: 0 });
+    }
+    const cooked = await env.DB.prepare(
+      "SELECT 1 AS n FROM comments c JOIN users u ON u.username_lc = c.username_lc " +
+      "WHERE c.recipe_id = ? AND u.cookbook_id = ? LIMIT 1"
+    ).bind(recipeId, me.cookbookId).first();
+    if (!cooked) throw new ApiError(400, "Log a cook before rating this one.");
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO recipe_ratings (cookbook_id, recipe_id, rating, rated_by, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?)"
+    ).bind(me.cookbookId, recipeId, rating, me.username, new Date().toISOString()).run();
+    return jsonResponse({ ok: true, rating });
+  }
+
+  /* ---- cook log entries (a date, and a comment if there is one to make) ----
+     No rating: an entry records that the thing was cooked on a day, and how
+     the household feels about the dish is kept once, in recipe_ratings, so
+     that cooking it a fifth time does not mean casting a fifth vote. */
   if (route === "comment/add") {
-    const rating = Math.round(Number(body.rating));
-    if (!(rating >= 1 && rating <= 5)) throw new ApiError(400, "Pick a rating from 1 to 5.");
     const found = await loadRecipeForReader(env, me, String(body.recipeId || ""));
     const cookedOn = /^\d{4}-\d{2}-\d{2}$/.test(body.cookedOn || "") ? body.cookedOn : new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
     await env.DB.prepare(
       "INSERT INTO comments (comment_id, recipe_id, username_lc, username, rating, comment, cooked_on, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).bind(newCommentId(), found.row.recipe_id, me.usernameLc, me.username, rating,
+      "VALUES (?, ?, ?, ?, 0, ?, ?, ?)"
+    ).bind(newCommentId(), found.row.recipe_id, me.usernameLc, me.username,
       cleanString(body.comment, MAX_COMMENT_CHARS), cookedOn, now).run();
     return jsonResponse({ ok: true });
   }
@@ -9501,8 +11015,8 @@ function iconResponse() {
 }
 
 const MANIFEST = JSON.stringify({
-  name: "The Recipe Box",
-  short_name: "Recipe Box",
+  name: "Kindred Cupboard",
+  short_name: "Kindred Cupboard",
   start_url: "/",
   scope: "/",
   /* display_override is the standards-based way to ask for the screen with no

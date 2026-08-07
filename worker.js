@@ -404,16 +404,10 @@ html.doc-scroll #app{ overflow-x:clip; }
 .scale-row{ display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
 .scale-btn{ padding:7px 9px; border-radius:8px; border:1px solid var(--border); background:#fff; font-size:14px; cursor:pointer; white-space:nowrap; }
 .scale-btn.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
-/* The chip and the field are the same object, so the box must not grow when
-   it becomes editable. The input is sized to two digits and the x is static
-   text beside it, which is what keeps the label reading "6x" as you type. */
-.scale-custom{ display:inline-flex; align-items:center; gap:1px; padding-left:8px; padding-right:8px; }
-.scale-custom-field{ width:2.4em; min-width:0; padding:0; border:0; background:none;
-  font:inherit; color:inherit; text-align:right; -moz-appearance:textfield; }
-.scale-custom-field:focus{ outline:none; }
-.scale-custom-field::placeholder{ color:inherit; opacity:.6; }
-.scale-custom.active .scale-custom-field{ color:#fff; }
-.scale-x{ opacity:.85; }
+/* The chip asks rather than answers: typing a multiplier into a control this
+   small never worked on a phone, so the chip opens a box and reads back
+   whatever came out of it. Its own width is left to the label. */
+.scale-custom{ display:inline-flex; align-items:center; padding-left:10px; padding-right:10px; }
 .makes-line{ font-size:13.5px; color:var(--ink-muted); margin:10px 0 0; }
 
 .macro-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; text-align:center; }
@@ -465,7 +459,12 @@ html.doc-scroll #app{ overflow-x:clip; }
 /* forms */
 .field{ margin-bottom:15px; }
 .field label{ display:block; font-size:13px; color:var(--ink-muted); margin-bottom:5px; }
+/* Email and password are ordinary fields and must look like ordinary fields.
+   Leaving them off this list handed them back to the browser's own defaults,
+   which on Safari meant a narrower box in a smaller face sitting directly
+   under a full-width Name. */
 .field input[type=text], .field input[type=number], .field input[type=date], .field input[type=url],
+.field input[type=email], .field input[type=password],
 .field textarea, .field select{
   width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--border); font-size:14.5px; background:#fff;
 }
@@ -507,14 +506,19 @@ html.doc-scroll #app{ overflow-x:clip; }
 /* welcome */
 .welcome-wrap{ max-width:440px; margin:0 auto; padding:44px 18px 80px; }
 .welcome-wrap h1{ font-size:30px; margin:14px 0 6px; }
-.welcome-wrap .lede{ font-size:14.5px; color:var(--ink-muted); margin:0 0 22px; line-height:1.5; }
+.welcome-wrap .lede{ font-size:18px; color:var(--ink-muted); margin:0 0 22px; line-height:1.5; }
 .brand-row{ display:flex; align-items:center; gap:10px; }
 .brand-row h1{ margin:0; }
+.welcome-icon{ width:44px; height:44px; }
+/* Two ways in, weighed the same, so neither reads as the expected one. They
+   are a pair of switches rather than a stack of drawers: picking one drops
+   the other, and whichever is on opens its panel underneath both. */
 .gate{ display:flex; flex-direction:column; gap:10px; margin-top:4px; }
-.gate-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
-  padding:14px 15px; border-radius:11px; border:1px solid var(--border); background:var(--card);
+.gate-btns{ display:flex; gap:10px; }
+.gate-btn{ flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+  padding:14px 12px; border-radius:11px; border:1px solid var(--border); background:var(--card);
   font-size:16px; font-weight:600; color:inherit; cursor:pointer; font-family:inherit; }
-.gate-btn.open{ border-color:var(--accent); color:var(--accent); }
+.gate-btn.open{ border-color:var(--accent); background:var(--accent); color:#fff; }
 .gate-panel{ border:1px solid var(--border-light); border-radius:11px; padding:14px;
   background:var(--card-alt); margin-top:-4px; }
 .lbl-row{ display:flex; align-items:center; gap:6px; }
@@ -1244,6 +1248,10 @@ const ICONS = {
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
   sliders: '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="8" r="2.5"/><circle cx="15" cy="16" r="2.5"/>',
   info: '<circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><circle cx="12" cy="7.6" r="1.1" fill="currentColor" stroke="none"/>',
+  /* An "i" is what a field is for; a "?" is what to do when it goes wrong.
+     They sit side by side on the sign-in password, so the two are drawn to
+     the same weight and radius. */
+  question: '<circle cx="12" cy="12" r="9"/><path d="M9.4 9.2a2.7 2.7 0 1 1 3.4 2.7v1.6"/><circle cx="12.8" cy="16.6" r="1.1" fill="currentColor" stroke="none"/>',
   chevronUp: '<polyline points="6 15 12 9 18 15"/>',
   chevronDown: '<polyline points="6 9 12 15 18 9"/>',
   upload: '<path d="M12 3v12"/><polyline points="7 8 12 3 17 8"/><path d="M4 17v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
@@ -1567,11 +1575,11 @@ const state = {
   _shownKey: null,
   scale: 1,
   customScaleOpen: false,
-  /* The last multiplier typed into the chip, kept so coming back to it starts
-     from what you had rather than from blank. _scaleEdit is only whether the
-     chip is currently a field. */
+  /* The last multiplier accepted in the box, kept so the chip reads it back
+     and so reopening the box starts from what you had rather than from blank.
+     _scaleDraft is only what is sitting in the box while it is open. */
   customScale: "",
-  _scaleEdit: false,
+  _scaleDraft: "",
   editDraft: null,
   editIsNew: false,
   editBaseUpdatedAt: null,
@@ -2351,9 +2359,18 @@ async function loadBodyInto(recipeId, after) {
 /* ====================================================================== */
 const INFO_NAME = "Shown to your friends when you add a recipe, add a friend, or comment on a recipe.";
 const INFO_EMAIL = "Never shared outside the app, or with anyone else using it. It is used only to sign you in, to recover your account, and for critical messages from Kindred Cupboard.";
+const INFO_PASS = "At least 8 characters. It is scrambled on this device before it is sent, so nobody else ever sees it.";
+const INFO_COOKBOOK = "Ten letters and numbers, from whoever you share a kitchen with. A cookbook holds two people; anyone else you cook with is a friend instead.";
+const INFO_FORGOT = "Write to " + SUPPORT_EMAIL + " from the address on your account and we will send you a temporary password.";
 function infoDot(key) {
   return '<button class="info-dot" title="What this is for" onclick="Actions.wInfo(\\'' + key + '\\')">' +
     icon("info", 15) + '</button>';
+}
+/* The same control with a different question behind it: not what the field
+   is, but what to do when you cannot fill it in. */
+function helpDot(key) {
+  return '<button class="info-dot" title="Forgotten your password?" onclick="Actions.wInfo(\\'' + key + '\\')">' +
+    icon("question", 15) + '</button>';
 }
 function infoNote(key, text) {
   return (state._wInfo && state._wInfo[key]) ? '<p class="info-note">' + esc(text) + '</p>' : "";
@@ -2361,7 +2378,7 @@ function infoNote(key, text) {
 function gateButtonHTML(key, label) {
   const open = state._wMode === key;
   return '<button class="gate-btn' + (open ? " open" : "") + '" onclick="Actions.wMode(\\'' + key + '\\')">' +
-    '<span>' + label + '</span>' + icon(open ? "chevronUp" : "chevronDown", 18) + '</button>';
+    '<span>' + label + '</span></button>';
 }
 function saveBoxHTML(id) {
   return '<label class="check-row"><input type="checkbox" id="' + id + '"' +
@@ -2381,18 +2398,18 @@ function newUserPanelHTML() {
     '<div class="field"><label>Confirm email</label>' +
       '<input type="email" id="w-email2" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wEmail2 || "") + '" />' +
     '</div>' +
-    '<div class="field"><label>Password</label>' +
+    '<div class="field"><label class="lbl-row">Password' + infoDot("pass") + '</label>' +
       '<input type="password" id="w-pass" autocomplete="new-password" value="' + esc(state._wPass || "") + '" />' +
-      '<p class="helper-text">At least 8 characters. It is scrambled on this device before it is sent, so nobody else ever sees it.</p>' +
+      infoNote("pass", INFO_PASS) +
     '</div>' +
     saveBoxHTML("w-save") +
     '<label class="check-row"><input type="checkbox" id="w-join"' + (state._wJoin ? " checked" : "") +
       ' onchange="Actions.wToggleJoin()" />' +
       '<span>Join a household cookbook I have been given the ID for.</span></label>' +
     (state._wJoin
-      ? '<div class="field"><label>Cookbook ID</label>' +
+      ? '<div class="field"><label class="lbl-row">Cookbook ID' + infoDot("cookbook") + '</label>' +
           '<input type="text" id="w-cookbook" class="font-mono" style="text-transform:uppercase" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(state._wCookbook || "") + '" />' +
-          '<p class="helper-text">Ten letters and numbers, from whoever you share a kitchen with. A cookbook holds two people; anyone else you cook with is a friend instead.</p>' +
+          infoNote("cookbook", INFO_COOKBOOK) +
         '</div>'
       : "") +
     '<button class="btn btn-primary btn-block" ' + (state._wBusy ? "disabled" : "") +
@@ -2405,21 +2422,20 @@ function existingUserPanelHTML() {
       '<input type="email" id="w-lemail" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wLoginEmail || "") + '" />' +
       infoNote("lemail", INFO_EMAIL) +
     '</div>' +
-    '<div class="field"><label>Password</label>' +
+    '<div class="field"><label class="lbl-row">Password' + infoDot("lpass") + helpDot("forgot") + '</label>' +
       '<input type="password" id="w-lpass" autocomplete="current-password" value="' + esc(state._wLoginPass || "") + '" />' +
+      infoNote("lpass", INFO_PASS) +
+      infoNote("forgot", INFO_FORGOT) +
     '</div>' +
     saveBoxHTML("w-lsave") +
     '<button class="btn btn-primary btn-block" ' + (state._wBusy ? "disabled" : "") +
       ' onclick="Actions.signIn()">' + (state._wBusy ? "Working…" : "Sign in") + '</button>' +
-    '<p class="helper-text" style="margin-top:12px">Forgotten your password? Write to ' + SUPPORT_EMAIL +
-      ' from the address on your account and we will send you a temporary one.</p>' +
-    '<p class="helper-text">Had a cookbook here before there were passwords? Choose <b>New User</b>, tick the household box, and enter your old name and Cookbook ID to carry it over.</p>' +
   '</div>';
 }
 function WelcomeViewHTML() {
   return '' +
     '<div class="welcome-wrap">' +
-      '<div class="brand-row"><span style="color:var(--accent)">' + icon("book", 32) + '</span>' +
+      '<div class="brand-row"><img class="app-icon welcome-icon" src="/icon.png" alt="" />' +
         '<h1 class="font-display">Kindred Cupboard</h1></div>' +
       '<p class="lede">Break bread together. Store and share recipes together. Craft meals together. Kindred Cupboard makes it easy.</p>' +
       (state._arrivedByScan
@@ -2427,10 +2443,12 @@ function WelcomeViewHTML() {
         : "") +
       (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
       '<div class="gate">' +
-        gateButtonHTML("new", "New User") +
-        (state._wMode === "new" ? newUserPanelHTML() : "") +
-        gateButtonHTML("existing", "Existing User") +
-        (state._wMode === "existing" ? existingUserPanelHTML() : "") +
+        '<div class="gate-btns">' +
+          gateButtonHTML("new", "New User") +
+          gateButtonHTML("existing", "Existing User") +
+        '</div>' +
+        (state._wMode === "new" ? newUserPanelHTML()
+          : state._wMode === "existing" ? existingUserPanelHTML() : "") +
       '</div>' +
     '</div>';
 }
@@ -4381,7 +4399,6 @@ const SCALE_PRESETS = [0.25, 0.5, 1, 2, 4];
    with the amounts underneath it. */
 function syncCustomScale() {
   state.customScaleOpen = SCALE_PRESETS.indexOf(state.scale) < 0;
-  state._scaleEdit = false;
   if (state.customScaleOpen) state.customScale = trimNumber(state.scale);
 }
 
@@ -4467,23 +4484,16 @@ function RecipeBodyHTML(r, hideLog) {
   const scaleBtns = SCALE_PRESETS.map(p =>
     '<button class="scale-btn ' + (!state.customScaleOpen && scale === p ? "active" : "") + '" onclick="Actions.setScale(' + p + ')">' + p + 'x</button>'
   ).join("");
-  /* The old pairing was a Custom button that revealed a number box beside it,
-     which is two controls for one number and never fitted on a phone. The
-     chip is the field: its own label is what you type into, and what you last
-     typed stays on it so coming back to 6x does not start from blank. */
+  /* Typing into a chip the size of a fingernail never worked on a phone, so
+     the chip is a door rather than a field: it opens a box, and afterwards it
+     reads back whatever was accepted. The last accepted number stays on it
+     even while a preset is live, so returning to 6x is one tap and a
+     confirmation rather than a fresh guess. */
   const customTxt = state.customScaleOpen ? trimNumber(scale) : (state.customScale || "");
-  const customChip = state._scaleEdit
-    ? '<span class="scale-btn scale-custom' + (state.customScaleOpen ? " active" : "") + '">' +
-        '<input id="scale-custom" class="scale-custom-field" type="text" inputmode="decimal" ' +
-          'autocomplete="off" placeholder="__" aria-label="Custom multiplier" ' +
-          'value="' + esc(customTxt || state.customScale || "") + '" ' +
-          'oninput="Actions.scaleDigitsOnly(this)" ' +
-          'onblur="Actions.commitCustomScale(this.value)" ' +
-          'onkeydown="if(event.key===\\'Enter\\'){event.preventDefault();this.blur();}" />' +
-        '<span class="scale-x">x</span>' +
-      '</span>'
-    : '<button class="scale-btn scale-custom' + (state.customScaleOpen ? " active" : "") + '" ' +
-        'onclick="Actions.editCustomScale()">' + esc(customTxt || "__") + 'x</button>';
+  const customChip = '<button class="scale-btn scale-custom' +
+    (state.customScaleOpen ? " active" : "") + '" ' +
+    'onclick="Actions.editCustomScale()">' +
+    (customTxt ? esc(customTxt) + 'x' : "Custom") + '</button>';
 
   const ingItems = r.ingredients.map(ing => {
     const mv = scaledVal(ing.metricValue, scale);
@@ -5045,6 +5055,25 @@ function modalShell(title, inner) {
     '<button class="modal-close" onclick="Actions.closeModal()">' + icon("x", 20) + '</button></div>' +
     (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
     inner + '</div></div>';
+}
+
+/* The multiplier the presets do not cover. A number and two answers - nothing
+   about the recipe changes until Accept is pressed, so a box opened by
+   accident costs a tap to dismiss and nothing else. */
+function CustomScaleModalHTML() {
+  const r = getActiveRecipe();
+  const unit = (r && r.servings && r.servings.unit) || "servings";
+  return modalShell("Custom servings",
+    '<p class="helper-text">How many times the recipe? The ingredients and the ' +
+      esc(unit) + ' below follow whatever you put here.</p>' +
+    '<div class="field"><label>Multiplier</label>' +
+      '<input type="text" id="scale-custom" inputmode="decimal" autocomplete="off" ' +
+        'placeholder="e.g. 6" aria-label="Custom multiplier" ' +
+        'value="' + esc(state._scaleDraft || "") + '" ' +
+        'oninput="Actions.scaleDigitsOnly(this)" ' +
+        'onkeydown="if(event.key===\\'Enter\\'){event.preventDefault();Actions.commitCustomScale();}" /></div>' +
+    '<div class="edit-actions"><button class="btn" onclick="Actions.cancelCustomScale()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="Actions.commitCustomScale()">Accept</button></div>');
 }
 
 function LogCookModalHTML() {
@@ -6075,7 +6104,8 @@ function renderModal() {
   const root = document.getElementById("modal-root");
   setScrollLock(!!state.modal);
   if (!state.modal) { root.innerHTML = ""; return; }
-  if (state.modal === "logCook") root.innerHTML = LogCookModalHTML();
+  if (state.modal === "customScale") root.innerHTML = CustomScaleModalHTML();
+  else if (state.modal === "logCook") root.innerHTML = LogCookModalHTML();
   else if (state.modal === "import") root.innerHTML = ImportModalHTML();
   else if (state.modal === "urlToRecipe") root.innerHTML = UrlToRecipeModalHTML();
   else if (state.modal === "account") root.innerHTML = AccountModalHTML();
@@ -6373,7 +6403,7 @@ Actions.adminSetPassword = async function() {
 /* --- navigation --- */
 Actions.openDetail = function(id, showLogs) {
   state.activeId = id; state.view = "detail"; state.scale = 1;
-  state.customScaleOpen = false; state._scaleEdit = false; state._showAllLogs = !!showLogs;
+  state.customScaleOpen = false; state.customScale = ""; state._showAllLogs = !!showLogs;
   /* Reached from the box rather than from a calendar square, so the portions
      are the recipe's own again and the banner has nothing to say. */
   state.scheduledFor = null;
@@ -6705,13 +6735,16 @@ Actions.toggleMark = async function(kind, id) {
 };
 Actions.setSort = function(v) { state.sort = v; updateResultsSection(); };
 
-Actions.setScale = function(p) { state.scale = p; state.customScaleOpen = false; state._scaleEdit = false; updateRecipeBody(); };
-/* Tapping the chip turns it into the field. The cursor goes to the end and
-   the text is selected, so on a laptop you can type straight over it and on
-   a phone the keyboard comes up on the number rather than on nothing. */
+Actions.setScale = function(p) { state.scale = p; state.customScaleOpen = false; updateRecipeBody(); };
+/* Tapping the chip opens a box rather than turning the chip into one. The
+   number it already carries is put in the field and selected, so a second
+   visit to 6x is a tap and a confirmation, and typing over it is one motion.
+   Going through the box every time is deliberate: the chip is small enough
+   that a stray tap would otherwise rescale the whole recipe silently. */
 Actions.editCustomScale = function() {
-  state._scaleEdit = true;
-  updateRecipeBody();
+  state._scaleDraft = state.customScale || "";
+  state.modal = "customScale";
+  renderModal();
   setTimeout(function () {
     const el = document.getElementById("scale-custom");
     if (!el) return;
@@ -6719,25 +6752,34 @@ Actions.editCustomScale = function() {
     if (el.setSelectionRange) { try { el.setSelectionRange(0, String(el.value).length); } catch (e) {} }
   }, 0);
 };
-/* A multiplier is a number. Anything else - including the x that is already
-   printed beside the field - is dropped as it is typed rather than rejected
-   afterwards, and only the first decimal point survives. */
+/* A multiplier is a number. Anything else is dropped as it is typed rather
+   than rejected afterwards, and only the first decimal point survives. */
 Actions.scaleDigitsOnly = function(el) {
   if (!el) return;
   const clean = String(el.value).replace(/[^0-9.]/g, "").replace(/\\.(?=.*\\.)/g, "");
   if (clean !== el.value) el.value = clean;
-  state.customScale = clean;
+  state._scaleDraft = clean;
 };
+/* Accept with nothing usable in the box closes it and leaves the recipe as it
+   was. Refusing to close would be a scolding over a control nobody has to
+   use. */
 Actions.commitCustomScale = function(v) {
-  const clean = String(v == null ? "" : v).replace(/[^0-9.]/g, "").replace(/\\.(?=.*\\.)/g, "");
+  const live = document.getElementById("scale-custom");
+  const raw = v == null ? (live ? live.value : state._scaleDraft) : v;
+  const clean = String(raw == null ? "" : raw).replace(/[^0-9.]/g, "").replace(/\\.(?=.*\\.)/g, "");
   const n = parseFloat(clean);
-  state._scaleEdit = false;
   if (!isNaN(n) && n > 0) {
     state.scale = n;
     state.customScale = trimNumber(n);
     state.customScaleOpen = true;
   }
+  state._scaleDraft = "";
+  Actions.closeModal();
   updateRecipeBody();
+};
+Actions.cancelCustomScale = function() {
+  state._scaleDraft = "";
+  Actions.closeModal();
 };
 Actions.toggleCustomScale = function() { Actions.editCustomScale(); };
 Actions.setCustomScale = function(v) { Actions.commitCustomScale(v); };

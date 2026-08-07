@@ -2388,7 +2388,7 @@ function saveBoxHTML(id) {
 function newUserPanelHTML() {
   return '<div class="gate-panel">' +
     '<div class="field"><label class="lbl-row">Name' + infoDot("name") + '</label>' +
-      '<input type="text" id="w-name" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state._wName || "") + '" />' +
+      '<input type="text" id="w-name" autocapitalize="words" autocorrect="off" spellcheck="false" value="' + esc(state._wName || "") + '" />' +
       infoNote("name", INFO_NAME) +
     '</div>' +
     '<div class="field"><label class="lbl-row">Email' + infoDot("email") + '</label>' +
@@ -5686,9 +5686,9 @@ function AccountModalHTML() {
       '<button class="btn btn-sm" onclick="Actions.openModal(\\'changeEmail\\')">' + icon("pencil", 14) + ' Change email</button>' +
     '</div>' +
     '<div class="field"><label>Your name</label>' +
-      '<input type="text" id="set-name" autocapitalize="none" autocorrect="off" spellcheck="false" value="' + esc(state.session.username) + '" />' +
+      '<input type="text" id="set-name" autocapitalize="words" autocorrect="off" spellcheck="false" value="' + esc(state.session.username) + '" />' +
       '<button class="btn btn-sm btn-block" onclick="Actions.saveUsername()">Save name</button>' +
-      '<p class="helper-text">This is what friends see on your recipes, ratings and comments. 2-20 characters: letters, numbers, dot, dash or underscore.</p>' +
+      '<p class="helper-text">This is what friends see on your recipes, ratings and comments. 2-25 characters: letters, numbers, spaces, dot, dash or underscore.</p>' +
     '</div>' +
     PushSettingHTML() +
     (state.mates.length
@@ -9232,7 +9232,16 @@ const newListId = () => randomFrom(RECIPE_ALPHABET, 16);
 const newMealId = () => randomFrom(RECIPE_ALPHABET, 16);
 const newDishId = () => randomFrom(RECIPE_ALPHABET, 16);
 
-const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{1,19}$/;
+/* Display names: 2-25 characters. Must open with a letter or digit and must
+   not end on a space, so a name can carry an internal space ("Aunt Ruth")
+   without picking up invisible padding at either end. Runs of whitespace are
+   collapsed to one plain space by normalizeUsername before this is tested,
+   which is also what keeps tabs and newlines out. */
+const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,23}[A-Za-z0-9_.-]$/;
+const USERNAME_RULE = "Names are 2-25 characters: letters, numbers, spaces, dot, dash or underscore.";
+function normalizeUsername(v) {
+  return cleanString(v, 40).replace(/\s+/g, " ").trim();
+}
 const COOKBOOK_RE = /^[A-Z0-9]{10}$/;
 /* Three tiers, in increasing order of reach:
      private   - nobody outside the cookbook. No link, no code, no handing out.
@@ -10483,7 +10492,7 @@ async function handleApi(route, body, env, request, ctx) {
          everybody who had an account before has been through it. */
   if (route === "auth/signup") {
     await throttleGuard(env, ["ip:" + ip]);
-    const username = cleanString(body.name, 40);
+    const username = normalizeUsername(body.name);
     const email = cleanString(body.email, 160);
     const emailLc = email.toLowerCase();
     const clientHash = cleanString(body.clientHash, 80);
@@ -10491,7 +10500,7 @@ async function handleApi(route, body, env, request, ctx) {
     const cookbookId = cleanString(body.cookbookId, 40).toUpperCase();
 
     if (!USERNAME_RE.test(username)) {
-      throw new ApiError(400, "Names are 2-20 characters: letters, numbers, dot, dash or underscore.");
+      throw new ApiError(400, USERNAME_RULE);
     }
     if (!EMAIL_RE.test(email)) throw new ApiError(400, "That does not look like an email address.");
     if (cleanString(body.emailConfirm, 160).toLowerCase() !== emailLc) {
@@ -11613,9 +11622,9 @@ async function handleApi(route, body, env, request, ctx) {
      travel through every table that stores it. Cookbook membership, and so
      every recipe and friendship, is untouched. */
   if (route === "rename") {
-    const next = cleanString(body.newUsername, 40);
+    const next = normalizeUsername(body.newUsername);
     if (!USERNAME_RE.test(next)) {
-      throw new ApiError(400, "Names are 2-20 characters: letters, numbers, dot, dash or underscore.");
+      throw new ApiError(400, USERNAME_RULE);
     }
     const nextLc = next.toLowerCase();
     const oldLc = me.usernameLc;

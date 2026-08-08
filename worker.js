@@ -318,8 +318,12 @@ html.doc-scroll #app{ overflow-x:clip; }
 
 /* chips */
 .chips{ display:flex; flex-wrap:wrap; align-content:flex-start; gap:8px; margin-bottom:16px; max-height:112px; overflow-y:auto; padding-right:2px; }
-.chip{ font-size:12.5px; line-height:18px; padding:6px 13px; border-radius:999px; border:1px solid var(--border); background:#fff; color:var(--ink-muted); cursor:pointer; }
+.chip{ font-size:12.5px; line-height:18px; padding:6px 13px; border-radius:999px; border:1px solid var(--border); background:#fff; color:var(--ink-muted); cursor:pointer;
+  -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
 .chip.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
+/* A tag being excluded. Grey rather than accent, because it is doing the
+   opposite job to the lit ones beside it. */
+.chip.not{ background:var(--ink-muted); border-color:var(--ink-muted); color:#fff; }
 
 /* buttons */
 .btn{ display:inline-flex; align-items:center; gap:6px; font-size:14px; padding:9px 14px; border-radius:9px; border:1px solid var(--border); background:#fff; color:var(--ink); cursor:pointer; }
@@ -1088,8 +1092,10 @@ body.tabs-down .toast{ bottom:calc(16px + var(--tab-pad-b,20px)); }
 .fbox-all { font-weight:600; }
 .fwrap { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 6px; }
 .fbox { font:inherit; font-size:13px; padding:5px 10px; border-radius:14px; cursor:pointer;
-  border:1px solid rgba(0,0,0,.18); background:var(--card); color:inherit; }
+  border:1px solid rgba(0,0,0,.18); background:var(--card); color:inherit;
+  -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
 .fbox.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.fbox.not { background:var(--ink-muted); border-color:var(--ink-muted); color:#fff; }
 .tagchips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:7px; min-height:22px; align-items:center; }
 .tagchip { display:inline-flex; align-items:center; gap:4px; font-size:13px; padding:4px 6px 4px 10px;
   border-radius:14px; background:var(--accent); color:#fff; }
@@ -1540,6 +1546,11 @@ const state = {
   declined: [],
   search: "",
   activeTags: [],
+  /* The other half of the tag filter: labels a recipe must NOT carry. Long
+     press a tag rather than tapping it. Kept apart from activeTags so the
+     two can never contradict each other - a tag is chosen, banned, or
+     neither, and switching between the three is one list move. */
+  notTags: [],
   _fopen: {},
   /* The box opens on your own shelf. Everyone else's is a deliberate look
      rather than the thing you land on. Note this counts as a filter, so the
@@ -3112,6 +3123,7 @@ async function openPushTarget(spec) {
     try { label = decodeURIComponent(id); } catch (e) { label = id; }
     state.ownerFilter = label || "ours";
     state.activeTags = [];
+    state.notTags = [];
     state.search = "";
     state.view = "library";
     renderApp();
@@ -3328,7 +3340,8 @@ function ownerFiltered() {
 /* Every selected tag must be present. A dish that suits breakfast and
    dinner carries both tags, so narrowing never loses it. */
 function matchesTags(r) {
-  return state.activeTags.every(function (t) { return recipeHasTag(r, t); });
+  if (!state.activeTags.every(function (t) { return recipeHasTag(r, t); })) return false;
+  return !(state.notTags || []).some(function (t) { return recipeHasTag(r, t); });
 }
 function filteredRecipes() {
   const q = state.search.trim().toLowerCase();
@@ -3361,7 +3374,8 @@ function sortRecipes(list) {
   return arr;
 }
 function hasActiveFilter() {
-  return !!(state.search.trim() || state.activeTags.length || state.ownerFilter !== "all");
+  return !!(state.search.trim() || state.activeTags.length || (state.notTags || []).length ||
+    state.ownerFilter !== "all");
 }
 
 /* One screenful of scrolling, near enough. Small enough that a keystroke is
@@ -3369,7 +3383,9 @@ function hasActiveFilter() {
 const PAGE_SIZE = 50;
 function resultsKey() {
   return [state.search.trim().toLowerCase(), state.ownerFilter, state.sort]
-    .concat(state.activeTags.slice().sort()).join("\\u0000");
+    .concat(state.activeTags.slice().sort())
+    .concat((state.notTags || []).slice().sort().map(function (t) { return "!" + t; }))
+    .join("\\u0000");
 }
 /* Called from the one place that draws the results, so every route that
    narrows the box - the search field, a chip, the filter sheet, the household
@@ -3384,13 +3400,18 @@ function ResultsSectionHTML() {
   syncShownCount();
   const results = filteredRecipes();
   const picked = state.activeTags.slice().sort(tagOrder);
-  const offered = suggestedTags(results, state.activeTags);
-  state._tagList = picked.concat(offered);
+  /* A banned tag is on nothing that is still showing, by definition, so it
+     can never come back as a suggestion. It is pinned into the strip after
+     the chosen ones instead, which is what keeps it switchable off. */
+  const banned = (state.notTags || []).slice().sort(tagOrder);
+  const offered = suggestedTags(results, picked.concat(banned));
+  state._tagList = picked.concat(banned, offered);
   let chips = state._tagList.map((t, i) =>
-    '<span class="chip' + (i < picked.length ? " active" : "") + '" onclick="Actions.toggleTagAt(' + i + ')">' +
+    '<span class="chip' + (i < picked.length ? " active" : i < picked.length + banned.length ? " not" : "") +
+      '" data-lp="tag:' + i + '" onclick="Actions.toggleTagAt(' + i + ')">' +
       esc(t) + '</span>'
   ).join("");
-  if (picked.length > 1) chips += '<span class="chip chip-clear" onclick="Actions.clearFilters()">Clear all</span>';
+  if (picked.length + banned.length > 1) chips += '<span class="chip chip-clear" onclick="Actions.clearFilters()">Clear all</span>';
   let body;
   if (results.length === 0) {
     body = state.recipes.length === 0
@@ -3417,7 +3438,12 @@ function ResultsSectionHTML() {
       '</div>';
     }
   }
-  return (state._tagList.length ? '<div class="chips">' + chips + '</div>' : "") + body;
+  /* Nothing chosen means no strip at all. The suggestions are a way of
+     narrowing something down, not a menu to start from - that is what
+     Inspiration is for - and three rows of them above an unfiltered shelf
+     was three rows of noise. */
+  const anyPick = picked.length + banned.length > 0;
+  return (anyPick && state._tagList.length ? '<div class="chips">' + chips + '</div>' : "") + body;
 }
 
 function LibraryViewHTML() {
@@ -3457,12 +3483,13 @@ function LibraryViewHTML() {
       '<div id="results-section">' + ResultsSectionHTML() + '</div>' +
     '</div>';
 }
+function pickedTagCount() { return state.activeTags.length + (state.notTags || []).length; }
 function FILTER_BTN_CLASS() {
-  return "btn search-filter" + (state.activeTags.length ? " on" : "");
+  return "btn search-filter" + (pickedTagCount() ? " on" : "");
 }
 function FilterButtonInnerHTML() {
   return icon("sliders", 16) + '<span class="flabel">Inspiration</span>' +
-    (state.activeTags.length ? '<span class="fcount">' + state.activeTags.length + '</span>' : "");
+    (pickedTagCount() ? '<span class="fcount">' + pickedTagCount() + '</span>' : "");
 }
 function updateResultsSection() {
   const el = document.getElementById("results-section");
@@ -4899,7 +4926,7 @@ function labelsUnder(node, withSelf) {
 /* Opening the menu shows you where your current picks live. After that the
    panels answer only to you - toggling a tag never folds anything away. */
 function seedFilterPanels() {
-  const on = l => state.activeTags.some(x => x.toLowerCase() === String(l).toLowerCase());
+  const on = l => tagPickState(l) !== "";
   const walkGroup = function (g, parent) {
     const key = panelKey(parent, g.name);
     if (labelsUnder(g, true).some(on)) state._fopen[key] = true;
@@ -4914,7 +4941,7 @@ function seedFilterPanels() {
 
 function FiltersModalHTML() {
   const flat = [], panels = [], badges = [];
-  const chosen = l => state.activeTags.some(x => x.toLowerCase() === String(l).toLowerCase());
+  const chosen = l => tagPickState(l) !== "";
   const count = (node, withSelf) => labelsUnder(node, withSelf).filter(chosen).length;
   /* The badge is always in the markup, only invisible while it reads zero.
      Picking your first tag used to conjure one out of nothing, which grew
@@ -4926,8 +4953,10 @@ function FiltersModalHTML() {
   };
   const box = (label, shown, extra) => {
     const i = flat.push(label) - 1;
-    return '<button class="fbox' + (extra || "") + (chosen(label) ? " on" : "") +
-      '" data-fb="' + i + '" onclick="Actions.toggleFilterAt(' + i + ')">' + esc(shown || label) + '</button>';
+    const st = tagPickState(label);
+    return '<button class="fbox' + (extra || "") + (st === "on" ? " on" : st === "not" ? " not" : "") +
+      '" data-fb="' + i + '" data-lp="filter:' + i + '" onclick="Actions.toggleFilterAt(' + i + ')">' +
+      esc(shown || label) + '</button>';
   };
   const panel = key => {
     const i = panels.push(key) - 1;
@@ -4971,18 +5000,20 @@ function updateFilterBoxes() {
   const root = document.querySelector(".filter-body");
   if (!root) return;
   const list = state._filterList || [];
-  const on = l => state.activeTags.some(x => x.toLowerCase() === String(l).toLowerCase());
   const els = root.querySelectorAll("[data-fb]");
   for (let j = 0; j < els.length; j++) {
     const label = list[Number(els[j].getAttribute("data-fb"))];
-    if (label !== undefined) els[j].classList.toggle("on", on(label));
+    if (label === undefined) continue;
+    const st = tagPickState(label);
+    els[j].classList.toggle("on", st === "on");
+    els[j].classList.toggle("not", st === "not");
   }
 }
 function updateFilterCounts() {
   const root = document.querySelector(".filter-body");
   if (!root) return;
   const list = state._badgeList || [];
-  const on = l => state.activeTags.some(x => x.toLowerCase() === String(l).toLowerCase());
+  const on = l => tagPickState(l) !== "";
   const els = root.querySelectorAll("[data-fc]");
   for (let j = 0; j < els.length; j++) {
     const pair = list[Number(els[j].getAttribute("data-fc"))];
@@ -6458,6 +6489,7 @@ Actions.openNotification = function(id) {
     /* There is no one recipe to open, so show the shelf it just unlocked. */
     state.ownerFilter = n.who;
     state.activeTags = [];
+    state.notTags = [];
     state.search = "";
     state.view = "library";
     renderApp();
@@ -6635,6 +6667,7 @@ Actions.openFilters = function() { state.filterSearch = ""; seedFilterPanels(); 
    folds back up so you are looking at the same short list you started with. */
 Actions.clearFilters = function() {
   state.activeTags = [];
+  state.notTags = [];
   state._fopen = {};
   renderApp();
 };
@@ -6658,10 +6691,36 @@ function updateFilterScrollHint() {
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply);
   else apply();
 }
+/* A tag is chosen, banned, or neither - never two of the three. Everything
+   that draws or counts a tag asks this rather than reading the two lists. */
+function tagPickState(l) {
+  const k = String(l).toLowerCase();
+  if (state.activeTags.some(x => String(x).toLowerCase() === k)) return "on";
+  if ((state.notTags || []).some(x => String(x).toLowerCase() === k)) return "not";
+  return "";
+}
+/* A tap. On a banned tag it lets it go rather than flipping it to chosen:
+   one gesture undoes what the other did, so nothing needs two taps to clear. */
 function toggleActiveTag(t) {
-  state.activeTags = state.activeTags.some(x => x.toLowerCase() === String(t).toLowerCase())
-    ? state.activeTags.filter(x => x.toLowerCase() !== String(t).toLowerCase())
+  const k = String(t).toLowerCase();
+  if (tagPickState(t) === "not") {
+    state.notTags = (state.notTags || []).filter(x => String(x).toLowerCase() !== k);
+    return;
+  }
+  state.activeTags = state.activeTags.some(x => x.toLowerCase() === k)
+    ? state.activeTags.filter(x => x.toLowerCase() !== k)
     : state.activeTags.concat([t]);
+}
+/* A long press. Chosen or neither both become banned; banned goes back to
+   neither. A tag leaving activeTags on its way in is what keeps the two
+   lists from ever both claiming it. */
+function toggleNotTag(t) {
+  const k = String(t).toLowerCase();
+  const was = tagPickState(t) === "not";
+  state.notTags = (state.notTags || []).filter(x => String(x).toLowerCase() !== k);
+  if (was) return;
+  state.activeTags = state.activeTags.filter(x => String(x).toLowerCase() !== k);
+  state.notTags = state.notTags.concat([t]);
 }
 Actions.toggleFilterAt = function(i) {
   const t = (state._filterList || [])[i];
@@ -6673,15 +6732,30 @@ Actions.toggleFilterAt = function(i) {
   updateFilterBoxes();
   updateFilterCounts();
 };
+Actions.notFilterAt = function(i) {
+  const t = (state._filterList || [])[i];
+  if (!t) return;
+  toggleNotTag(t);
+  updateFilterBoxes();
+  updateFilterCounts();
+};
 Actions.toggleTagAt = function(i) {
   const t = (state._tagList || [])[i];
   if (t === undefined) return;
   toggleActiveTag(t);
   updateLibraryChrome();
 };
+Actions.notTagAt = function(i) {
+  const t = (state._tagList || [])[i];
+  if (t === undefined) return;
+  toggleNotTag(t);
+  updateLibraryChrome();
+};
+/* The tags stay put across a change of shelf: the question being asked is
+   usually "who else has one of these", so wiping them threw away the whole
+   point of the switch. */
 Actions.setOwnerFilter = function(v) {
   state.ownerFilter = v;
-  state.activeTags = [];
   /* Called from the results area itself, which updateLibraryChrome replaces
      underneath us, so the label on the picker needs the full pass. */
   renderApp();
@@ -6695,7 +6769,6 @@ Actions.pickOwner = function(i) {
   const v = (state._ownerList || [])[i];
   if (v === undefined) return;
   state.ownerFilter = v;
-  state.activeTags = [];
   state.pickSearch = "";
   Actions.closeModal();
   renderApp();
@@ -8171,18 +8244,65 @@ Actions.onMealDishInput = function(mealId, v) {
   const m = mealById(mealId);
   if (box && m) box.innerHTML = MealDishResultsHTML(m);
 };
+/* The strip of window that is actually looking at the page: above the
+   keyboard when one is up, the whole thing when it is not. Read from the
+   visual viewport, because the layout viewport does not shrink for a
+   keyboard - which is why scrollIntoView cannot be used for this. */
+function visibleBand() {
+  const vv = (typeof window !== "undefined") ? window.visualViewport : null;
+  if (vv && vv.height) return { top: vv.offsetTop || 0, height: vv.height };
+  const h = (typeof window !== "undefined" && window.innerHeight) ||
+    (typeof document !== "undefined" && document.documentElement && document.documentElement.clientHeight) || 0;
+  return { top: 0, height: h };
+}
+/* Everything between the field and the page that can scroll, innermost
+   first. A field inside a modal's own scrolling body has to move that box;
+   moving the page underneath would not shift it at all. */
+function scrollParents(el) {
+  const out = [];
+  let n = el && el.parentNode;
+  while (n && n.nodeType === 1) {
+    if (n.scrollHeight > n.clientHeight + 1) {
+      let ov = "";
+      try {
+        const st = (typeof window !== "undefined" && window.getComputedStyle) ? window.getComputedStyle(n) : null;
+        ov = st ? (st.overflowY || st.overflow || "") : "";
+      } catch (e) { ov = ""; }
+      if (!ov || ov === "auto" || ov === "scroll" || ov === "overlay") out.push(n);
+    }
+    n = n.parentNode;
+  }
+  return out;
+}
 /* Tapping a field halfway down a long page puts the keyboard over the thing
    you just tapped, and the browser's own scroll correction fires before the
    keyboard has finished coming up, so the field lands wherever the page
-   happened to be. This puts it near the top of whatever room is left and
-   leaves it there: "start" rather than "center", because a field that stays
-   put while results appear and disappear underneath it is the whole point -
-   centring re-aims at the field every time the block below it changes
-   height, which is what made typing with no matches jump around. */
+   happened to be. This puts it in the middle of whatever room is left.
+   Done by hand rather than with scrollIntoView, which centres in the layout
+   viewport and so aims at a point underneath the keys. Each pass measures
+   again and hands what is left to the next box out, so a field inside a
+   scrolling modal still lands right when that box runs out of travel.
+   No smoothing: the follow-up pass measures a live rect the moment the
+   keyboard has finished rising, and an animation in flight would be
+   measuring the wrong place. */
 function bringIntoView(el) {
-  if (!el || !el.scrollIntoView) return;
-  try { el.scrollIntoView({ block: "start", behavior: "smooth" }); }
-  catch (e) { el.scrollIntoView(); }
+  if (!el) return;
+  if (!el.getBoundingClientRect) { if (el.scrollIntoView) el.scrollIntoView(); return; }
+  const band = visibleBand();
+  if (!band.height) { if (el.scrollIntoView) el.scrollIntoView(); return; }
+  const boxes = scrollParents(el);
+  for (let i = 0; i <= boxes.length; i++) {
+    const r = el.getBoundingClientRect();
+    /* A field taller than the room left is aimed by its top instead - there
+       is no middle to put it in, and hiding its first line is the worse
+       half to lose. */
+    const room = band.height - r.height;
+    const want = band.top + (room > 0 ? room / 2 : 0);
+    const delta = Math.round(r.top - want);
+    if (delta > -2 && delta < 2) return;
+    if (i < boxes.length) boxes[i].scrollTop += delta;
+    else scrollToY(scrollAt() + delta);
+  }
 }
 /* The second pass catches the resize when the keyboard opens, which is what
    actually shifts the field out from under the cursor. It is cancelled the
@@ -8946,6 +9066,80 @@ if (typeof document !== "undefined" && document.addEventListener) {
   });
   document.addEventListener("input", cancelFocusScroll);
   document.addEventListener("focusout", cancelFocusScroll);
+}
+/* Long press is the second gesture on a tag: a tap chooses it, a press bans
+   it. Bound once on the document and read from a data attribute, because
+   the chips are rebuilt on every keystroke and per-element handlers would
+   have to be rewired each time. With no pointer to hold down, a right-click
+   says the same thing. */
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
+function longPressKey(el) {
+  let n = el;
+  while (n && n.nodeType === 1) {
+    const v = n.getAttribute ? n.getAttribute("data-lp") : null;
+    if (v) return v;
+    n = n.parentNode;
+  }
+  return null;
+}
+function runLongPress(key) {
+  const at = String(key).indexOf(":");
+  if (at < 0) return;
+  const kind = key.slice(0, at), i = Number(key.slice(at + 1));
+  if (kind === "tag") Actions.notTagAt(i);
+  else if (kind === "filter") Actions.notFilterAt(i);
+}
+if (typeof document !== "undefined" && document.addEventListener) {
+  let lpTimer = 0, lpFired = false, lpTouchAt = 0, lpX = 0, lpY = 0;
+  const lpStop = function () { if (lpTimer) clearTimeout(lpTimer); lpTimer = 0; };
+  const touchPoint = function (e) {
+    return (e && e.touches && e.touches[0]) ? e.touches[0] : (e && e.changedTouches && e.changedTouches[0]) || e || {};
+  };
+  document.addEventListener("touchstart", function (e) {
+    lpTouchAt = Date.now();
+    lpFired = false;
+    lpStop();
+    if (e && e.touches && e.touches.length > 1) return;
+    const key = longPressKey(e && e.target);
+    if (!key) return;
+    const p = touchPoint(e);
+    lpX = p.clientX || 0; lpY = p.clientY || 0;
+    lpTimer = setTimeout(function () {
+      lpTimer = 0;
+      lpFired = true;
+      runLongPress(key);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+  /* A press that turns into a scroll is a scroll. */
+  document.addEventListener("touchmove", function (e) {
+    if (!lpTimer) return;
+    const p = touchPoint(e);
+    if (Math.abs((p.clientX || 0) - lpX) > LONG_PRESS_SLOP ||
+        Math.abs((p.clientY || 0) - lpY) > LONG_PRESS_SLOP) lpStop();
+  }, { passive: true });
+  document.addEventListener("touchend", lpStop);
+  document.addEventListener("touchcancel", lpStop);
+  document.addEventListener("contextmenu", function (e) {
+    const key = longPressKey(e && e.target);
+    if (!key) return;
+    if (e.preventDefault) e.preventDefault();
+    lpStop();
+    /* Android raises this from the same press the timer has already acted
+       on, so anything within reach of a finger is left to the timer. */
+    if (lpFired || (Date.now() - lpTouchAt) < 1500) return;
+    runLongPress(key);
+  });
+  /* Capture, so the tap that ends a long press is swallowed before it
+     reaches the chip's own handler and undoes what the press just did. */
+  document.addEventListener("click", function (e) {
+    if (!lpFired) return;
+    lpFired = false;
+    if (!longPressKey(e && e.target)) return;
+    if (e.preventDefault) e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+  }, true);
 }
 /* Closing the tab should free the recipe rather than leave it locked for
    the full timeout. Best effort: this does not always fire on mobile,

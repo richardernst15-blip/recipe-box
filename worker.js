@@ -574,7 +574,20 @@ html.doc-scroll #app{ overflow-x:clip; }
    shrank with it and the page's cream showed through underneath - a bar
    along the foot of the installed app that appeared with the keyboard and
    went again with it. Painted first, so the card still sits on top. */
-.modal-overlay::before{ content:""; position:fixed; top:0; left:0; right:0; bottom:0;
+/* And it is deliberately bigger than the window it is pinned to. A fixed
+   element is measured against the layout viewport, and on iOS that is not
+   always the same as the glass you are looking at: focusing a field folds
+   the toolbar away and hands the web view more room, and while the body is
+   pinned there is no scroll to make iOS remeasure, so the layout viewport
+   stays the old shorter one. The grey then stops an inch short of the foot
+   of the screen and a strip of undimmed page shows below it - the cream
+   band that arrives with the keyboard and leaves with it. Sliding the edges
+   half a screen past the window in each direction means the grey covers
+   whichever viewport turns out to be the live one. Nothing is lost off the
+   sides: a fixed element adds no scrollable room, so the overshoot cannot
+   be panned to. Vertical only, since that is the axis the two viewports
+   disagree on, and it keeps the horizontal exactly as it was. */
+.modal-overlay::before{ content:""; position:fixed; top:-50vh; left:0; right:0; bottom:-50vh;
   background:rgba(34,31,28,.5); }
 .modal-box{ position:relative; background:#fff; width:100%; max-width:560px; max-height:100%; overflow-y:auto;
   overscroll-behavior:contain; border-radius:16px; padding:22px; }

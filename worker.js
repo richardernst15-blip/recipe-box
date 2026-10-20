@@ -3471,6 +3471,7 @@ async function checkHandoff() {
 }
 /* Where a link from outside goes once the app has it, by either route. */
 async function openOutsideIntent(intent) {
+  releaseFocus();
   /* Signed out, a recipe still opens - links are readable without an
      account - and a friend code waits for the sign-in, as it would have. */
   if (!state.session && intent.type !== "recipe") {
@@ -7362,6 +7363,10 @@ async function copyToClipboard(text, okMsg) {
     try {
       const ta = document.createElement("textarea");
       ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      /* Read-only so selecting it does not bring the keyboard up - and then
+         take it away again with the field, which is what strands the tab
+         bar halfway up the screen on iOS. */
+      ta.setAttribute("readonly", "");
       document.body.appendChild(ta); ta.select(); document.execCommand("copy");
       document.body.removeChild(ta); toast(okMsg); return true;
     } catch (e2) { toast("Couldn't copy - select the link and copy it manually"); return false; }
@@ -7831,6 +7836,7 @@ Actions.saveCookLog = async function() {
     state.modal = null;
     state._cookLogBusy = false;
     state._cookLogDraft = null;
+    releaseFocus();
     renderModal();
     /* The log we hold for this recipe is now one entry short of the truth,
        so it is dropped and fetched again with the body still cached. */
@@ -8100,6 +8106,7 @@ Actions.pasteJsonIntoDraft = async function() {
   if (!text || !text.trim()) { toast("Clipboard is empty"); return; }
   const body = recipeFromJsonText(text);
   if (!body || !applyJsonToDraft(body)) { toast("That is not a recipe"); return; }
+  releaseFocus();
   renderApp();
   toast("Pasted - check it over, then Save recipe");
 };
@@ -9546,6 +9553,32 @@ function clearTextSelection() {
     if (sel && sel.removeAllRanges) sel.removeAllRanges();
   } catch (e) {}
 }
+/* iOS keeps measuring the screen as though the keyboard were still up if the
+   field it belongs to is taken off the page while it is showing - the tab
+   bar and anything else pinned to the bottom then float halfway up the
+   screen. Letting go of the field first lets the keyboard close the proper
+   way. Only for redraws that throw a typed-in field away: the search boxes
+   that redraw on every keystroke keep their focus on purpose. */
+function releaseFocus() {
+  try {
+    const a = typeof document !== "undefined" ? document.activeElement : null;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(String(a.tagName || "")) && a.blur) a.blur();
+  } catch (e) {}
+}
+/* And if it has got stuck anyway, a one-pixel scroll and back makes iOS
+   measure the screen again. Run when the keyboard closes and when the app is
+   brought back, which is when it goes wrong. Too small to see, and moved
+   with the bar's anchor so the bar does not read it as a swipe. */
+function nudgeLayout() {
+  try {
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA)$/.test(String(a.tagName || ""))) return;
+    const y = scrollAt();
+    scrollToY(y > 0 ? y - 1 : y + 1);
+    scrollToY(y);
+    tabScrollAt = y;
+  } catch (e) {}
+}
 function setTabsDown(down) {
   if (tabsAreDown === down) return;
   tabsAreDown = down;
@@ -9981,6 +10014,7 @@ if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", function() {
     if (document.hidden) return;
     checkHandoff();
+    setTimeout(nudgeLayout, 60);
     pollWatched();
     /* iOS gives the wake lock back the moment the page is hidden, so coming
        back to a recipe with cook mode still on means asking for it again. */
@@ -10007,6 +10041,12 @@ if (typeof document !== "undefined" && document.getElementById) {
 }
 if (typeof window !== "undefined" && window.visualViewport && window.addEventListener) {
   const vvport = window.visualViewport;
+  let vvLastH = vvport.height;
+  vvport.addEventListener("resize", function () {
+    /* The visible area growing by a keyboard's height is the keyboard going. */
+    if (vvport.height - vvLastH > 120) setTimeout(nudgeLayout, 60);
+    vvLastH = vvport.height;
+  });
   vvport.addEventListener("resize", syncViewportVars);
   vvport.addEventListener("scroll", syncViewportVars);
   window.addEventListener("orientationchange", syncViewportVars);

@@ -516,6 +516,10 @@ h1, h2, h3, .font-display, .modal-head h3, .col-title, .empty-state p.title{
 .openapp-go{ flex-shrink:0; }
 .openapp-bar .openapp-go:first-child{ margin-right:auto; }
 .openapp-x{ flex-shrink:0; color:var(--ink-muted); }
+.fill-report{ background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px;
+  padding:10px 12px; margin:0 0 12px; font-size:13.5px; line-height:1.4; color:var(--ink); }
+.fill-report p{ margin:0 0 6px; }
+.fill-report .btn{ margin-top:2px; }
 .json-tools{ display:flex; justify-content:flex-end; margin:18px 0 6px; }
 .json-tools-edit{ justify-content:flex-start; margin:0 0 14px; }
 /* ---- recipe tabs ---- */
@@ -1608,6 +1612,8 @@ const ICONS = {
   shareIos: '<path d="M8.5 10.5H6A1.8 1.8 0 0 0 4.2 12.3v7A1.8 1.8 0 0 0 6 21.1h12a1.8 1.8 0 0 0 1.8-1.8v-7a1.8 1.8 0 0 0-1.8-1.8h-2.5"/><line x1="12" y1="2.9" x2="12" y2="14.6"/><polyline points="8.4 6.4 12 2.9 15.6 6.4"/>',
   /* Cook mode. A flame reads as "this is the cooking one" at 16px where a
      screen or a lightbulb reads as settings. */
+  /* A four-point sparkle: something filled in for you. */
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7z"/>',
   /* Two cards, one behind the other: a recipe held open as a tab. */
   tabs: '<rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/>',
   flame: '<path d="M12 2.8c.5 2.9 2 4.1 3.2 5.6a6.6 6.6 0 0 1 1.6 4.3 4.8 4.8 0 0 1-9.6 0c0-1.5.6-2.8 1.5-3.7.3 1 .8 1.7 1.5 2.1.3-3-.3-5.5 1.8-8.3z"/>',
@@ -1746,6 +1752,180 @@ function stepTextHTML(text, ingredients, factor) {
     last = m.index + m[0].length;
   }
   return out + esc(raw.slice(last));
+}
+
+/* ---- filling in step amounts from the ingredient list ------------------
+   Works out where each ingredient goes in and writes its marker there, so a
+   recipe written before markers existed can show scaled amounts in its
+   steps. Rule-based, not AI: steps call an ingredient by a shorter name than
+   the list does ("the whey" for Unflavored Whey Protein Powder), so each
+   ingredient is looked for under its full name first and then shorter and
+   shorter versions of it, longest first across the whole recipe so that
+   "peanut butter" is claimed before "butter" could be. The first step that
+   names an ingredient gets its marker; any amount already written there is
+   taken out, and a "the" in front of it is dropped. It runs on the form only,
+   so nothing changes until Save, and it is meant to be read over. */
+const FILL_GENERIC = {
+  powder: 1, extract: 1, oil: 1, sauce: 1, ground: 1, fresh: 1, raw: 1, natural: 1, unsalted: 1,
+  salted: 1, large: 1, small: 1, medium: 1, whole: 1, unflavored: 1, dried: 1, chopped: 1, seeds: 1,
+  seed: 1, flakes: 1, leaves: 1, juice: 1, paste: 1, light: 1, dark: 1, plain: 1, organic: 1,
+  kosher: 1, pure: 1, extra: 1, virgin: 1, boneless: 1, skinless: 1, frozen: 1, canned: 1, minced: 1
+};
+function fillSingular(w) {
+  if (/ies$/.test(w) && w.length > 4) return w.slice(0, -3) + "y";
+  if (/(oes|ches|shes|sses|xes)$/.test(w)) return w.slice(0, -2);
+  if (/[^s]s$/.test(w)) return w.slice(0, -1);
+  return w;
+}
+/* Every way a step might name one ingredient, with how much of the full name
+   each covers - the tie-break when two ingredients share a word. */
+function fillPhrases(name) {
+  const words = String(name || "").toLowerCase().replace(/[^a-z0-9À-ɏ'& -]/g, " ").split(/\\s+/).filter(Boolean);
+  const out = [];
+  const add = function (ws, fallback) {
+    if (!ws.length) return;
+    const p = ws.join(" ");
+    const cover = ws.length / words.length;
+    out.push({ p: p, cover: cover, fallback: fallback });
+    const last = ws[ws.length - 1], sl = fillSingular(last);
+    if (sl !== last) out.push({ p: ws.slice(0, -1).concat(sl).join(" "), cover: cover, fallback: fallback });
+  };
+  for (let i = 0; i < words.length; i++) {
+    const tail = words.slice(i);
+    if (tail.length === 1 && FILL_GENERIC[tail[0]]) continue;
+    add(tail, false);
+  }
+  words.forEach(function (w, i) {
+    if (i === words.length - 1 || FILL_GENERIC[w] || w.length < 4) return;
+    add([w], true);
+  });
+  return out;
+}
+function fillIsLetter(ch) { return !!ch && /[a-zA-ZÀ-ɏ]/.test(ch); }
+/* Every whole-word place a phrase appears in a piece of text. */
+function fillFind(lower, p) {
+  const at = [];
+  let i = lower.indexOf(p);
+  while (i >= 0) {
+    if (!fillIsLetter(lower[i - 1]) && !fillIsLetter(lower[i + p.length])) at.push(i);
+    i = lower.indexOf(p, i + 1);
+  }
+  return at;
+}
+const FILL_SHARES = { "half": "1/2", "a third": "1/3", "one third": "1/3", "a quarter": "1/4",
+  "one quarter": "1/4", "two thirds": "2/3" };
+const FILL_REMAINDER = { "1/2": "1/2", "1/3": "2/3", "1/4": "3/4", "2/3": "1/3" };
+const FILL_SPLIT_RE = /\\b(half|a third|one third|a quarter|one quarter|two thirds)\\s+(?:of\\s+)?(?:the\\s+)?$/i;
+const FILL_REST_RE = /(?:\\bthe\\s+)?(?:remaining\\s+|rest\\s+of\\s+(?:the\\s+)?|other\\s+half\\s+(?:of\\s+)?(?:the\\s+)?)$/i;
+/* An amount written just before the ingredient: the number and its unit go,
+   the words that say what kind of piece it is ("large", "cloves") stay. */
+const FILL_AMOUNT_RE = /(?:^|[\\s(])((?:\\d+(?:[.,]\\d+)?(?:\\s*[-–]\\s*\\d+(?:[.,]\\d+)?)?(?:\\s+\\d+\\/\\d+|\\/\\d+)?|\\d*\\s*[½¼¾⅓⅔⅛⅜⅝⅞])\\s*(?:cups?|c\\.|tablespoons?|tbsps?|tbs|teaspoons?|tsps?|grams?|g|kilograms?|kg|millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|ounces?|oz|pounds?|lbs?|pinch(?:es)?|dash(?:es)?)?\\.?\\s*(?:\\([^()]*\\)\\s*)?(?:of\\s+)?)((?:(?:large|small|medium|whole|fresh|ripe|heaping|level|scant|packed|cloves?|cans?|sticks?|slices?|sprigs?|stalks?|heads?|bunch(?:es)?)\\s+)*)$/i;
+const FILL_MARKER_RE = /\\{([^{}]{1,120})\\}/g;
+
+function fillStepAmounts(ingredients, stepTexts) {
+  const ings = (ingredients || []).filter(function (ing) {
+    return String(ing.name || "").trim() && amountText(ing, 1);
+  });
+  const texts = (stepTexts || []).map(function (t) { return String(t || ""); });
+  const lower = texts.map(function (t) { return t.toLowerCase(); });
+  const claimed = texts.map(function () { return []; });
+  const free = function (si, a, b) { return !claimed[si].some(function (c) { return a < c[1] && b > c[0]; }); };
+  const done = {};
+  const fresh = {};
+  const byName = {};
+  ings.forEach(function (ing, k) { byName[String(ing.name).trim().toLowerCase()] = k; });
+  const phrases = ings.map(function (ing) { return fillPhrases(ing.name); });
+
+  /* Markers already there: those ingredients are placed, and neither the
+     marker nor the word that follows it is up for grabs. */
+  texts.forEach(function (t, si) {
+    let m;
+    FILL_MARKER_RE.lastIndex = 0;
+    while ((m = FILL_MARKER_RE.exec(t))) {
+      claimed[si].push([m.index, m.index + m[0].length]);
+      const k = byName[m[1].split("*")[0].trim().toLowerCase()];
+      if (k === undefined) continue;
+      done[k] = true;
+      const after = m.index + m[0].length + (/^\\s*/.exec(t.slice(m.index + m[0].length))[0].length);
+      phrases[k].forEach(function (ph) {
+        if (lower[si].slice(after, after + ph.p.length) === ph.p && !fillIsLetter(lower[si][after + ph.p.length]))
+          claimed[si].push([after, after + ph.p.length]);
+      });
+    }
+  });
+
+  /* A fallback word two ingredients share ("chicken" in Chicken Broth and
+     Chicken Thighs) says nothing about which one is meant, so neither gets it. */
+  const fallbackCount = {};
+  phrases.forEach(function (list) {
+    const seen = {};
+    list.forEach(function (ph) { if (ph.fallback && !seen[ph.p]) { seen[ph.p] = 1; fallbackCount[ph.p] = (fallbackCount[ph.p] || 0) + 1; } });
+  });
+  const pairs = [];
+  phrases.forEach(function (list, k) {
+    list.forEach(function (ph) { if (!ph.fallback || fallbackCount[ph.p] === 1) pairs.push({ k: k, p: ph.p, cover: ph.cover }); });
+  });
+  pairs.sort(function (x, y) { return (y.p.length - x.p.length) || (y.cover - x.cover); });
+
+  const edits = texts.map(function () { return []; });
+  pairs.forEach(function (pr) {
+    if (done[pr.k]) return;
+    for (let si = 0; si < texts.length; si++) {
+      const hits = fillFind(lower[si], pr.p).filter(function (a) { return free(si, a, a + pr.p.length); });
+      if (!hits.length) continue;
+      const a = hits[0];
+      done[pr.k] = true;
+      fresh[pr.k] = true;
+      /* Every other mention of the same thing is spoken for, so a later
+         "the peanut butter" cannot be taken for plain butter. */
+      for (let sj = 0; sj < texts.length; sj++)
+        fillFind(lower[sj], pr.p).forEach(function (b) { claimed[sj].push([b, b + pr.p.length]); });
+      const split = FILL_SPLIT_RE.exec(texts[si].slice(0, a));
+      const share = split ? FILL_SHARES[split[1].toLowerCase().replace(/\\s+/g, " ")] : "";
+      edits[si].push({ a: a, k: pr.k, share: share, cut: split ? split.index : -1 });
+      if (share) {
+        /* Half now means the rest later: the first "remaining" or "rest of"
+           the same thing after it gets what is left. */
+        let found = false;
+        for (let sj = si; sj < texts.length && !found; sj++) {
+          fillFind(lower[sj], pr.p).forEach(function (b) {
+            if (found || (sj === si && b <= a)) return;
+            const rest = FILL_REST_RE.exec(texts[sj].slice(0, b));
+            if (!rest) return;
+            found = true;
+            edits[sj].push({ a: b, k: pr.k, share: FILL_REMAINDER[share], cut: rest.index });
+          });
+        }
+      }
+      return;
+    }
+  });
+
+  const out = texts.map(function (t, si) {
+    const list = edits[si].slice().sort(function (x, y) { return y.a - x.a; });
+    let s = t;
+    list.forEach(function (e) {
+      let head = s.slice(0, e.a), keep = "";
+      if (e.cut >= 0) head = head.slice(0, e.cut);
+      else {
+        const am = FILL_AMOUNT_RE.exec(head);
+        if (am) {
+          const start = am.index + am[0].length - am[1].length - am[2].length;
+          keep = am[2];
+          head = head.slice(0, start);
+        } else head = head.replace(/\\b(the|some)\\s+$/i, "");
+      }
+      const name = String(ings[e.k].name).trim();
+      s = head + "{" + name + (e.share ? "*" + e.share : "") + "} " + keep + s.slice(e.a);
+    });
+    return s;
+  });
+  return {
+    steps: out,
+    added: Object.keys(fresh).length,
+    placed: ings.filter(function (_, k) { return done[k]; }).map(function (i) { return String(i.name).trim(); }),
+    missing: ings.filter(function (_, k) { return !done[k]; }).map(function (i) { return String(i.name).trim(); })
+  };
 }
 /* A multiplier the way it would be written by hand: 6 rather than 6.00, and
    1.5 rather than 1.5000000000000002. Two decimals is as fine as the chip
@@ -5356,6 +5536,22 @@ function stripBlankRows(d) {
   d.steps = d.steps.filter(s => !stepIsBlank(s));
 }
 
+/* What the last Fill in amounts did, shown under the Steps heading of the
+   same draft it ran on - a fresh edit starts without it. */
+function FillReportHTML(d) {
+  const r = state._fillReport;
+  if (!r || r.draft !== d) return "";
+  const lines = [];
+  if (r.added) lines.push("Filled in " + r.added + " ingredient" + (r.added === 1 ? "" : "s") +
+    ". Read each step over, then Save recipe.");
+  else if (!r.missing.length) lines.push("Every ingredient already has its amount in the steps.");
+  else lines.push("Nothing new could be placed.");
+  if (r.missing.length) lines.push("Not found in any step: <b>" + r.missing.map(esc).join(", ") +
+    "</b>. Type <b>{Name}</b> where each goes in, if it should show.");
+  return '<div class="fill-report">' + lines.map(function (l) { return '<p>' + l + '</p>'; }).join("") +
+    (r.added ? '<button class="btn btn-sm btn-ghost" onclick="Actions.undoFillStepAmounts()">Undo</button>' : "") +
+  '</div>';
+}
 function EditViewHTML() {
   const d = state.editDraft;
   ensureTrailingBlankRows(d);
@@ -5413,7 +5609,9 @@ function EditViewHTML() {
       '</div>' +
       '<div class="subhead-row"><span class="small-label">Ingredients</span></div>' +
       '<div id="ingredients-container" oninput="Actions.growIngredients()" onchange="Actions.growIngredients()">' + ingredientsHTML + '</div>' +
-      '<div class="subhead-row" style="margin-top:16px"><span class="small-label">Steps</span></div>' +
+      '<div class="subhead-row" style="margin-top:16px"><span class="small-label">Steps</span>' +
+        '<button class="btn btn-sm" onclick="Actions.fillStepAmounts()">' + icon("sparkle", 14) + ' Fill in amounts</button></div>' +
+      FillReportHTML(d) +
       '<p class="helper-text step-marker-hint">Write <b>{Ingredient Name}</b> where an amount goes and the recipe ' +
         'fills it in at whatever scale is picked. <b>{Butter*1/2}</b> uses half of it.</p>' +
       '<div id="steps-container" oninput="Actions.growSteps()" onchange="Actions.growSteps()">' + stepsHTML + '</div>' +
@@ -8099,6 +8297,28 @@ function applyJsonToDraft(body) {
   return true;
 }
 
+/* Writes the markers into the form, from whatever is typed there now. */
+Actions.fillStepAmounts = function() {
+  syncDraftFromDOM();
+  const d = state.editDraft;
+  if (!d) return;
+  const before = d.steps.map(function (s) { return s.text; });
+  const res = fillStepAmounts(d.ingredients, before);
+  d.steps = d.steps.map(function (s, i) { return Object.assign({}, s, { text: res.steps[i] }); });
+  state._fillReport = { draft: d, added: res.added, missing: res.missing, before: before };
+  releaseFocus();
+  renderApp();
+};
+Actions.undoFillStepAmounts = function() {
+  const r = state._fillReport;
+  const d = state.editDraft;
+  if (!r || !d || r.draft !== d) return;
+  syncDraftFromDOM();
+  d.steps = d.steps.map(function (s, i) { return Object.assign({}, s, { text: i < r.before.length ? r.before[i] : s.text }); });
+  state._fillReport = null;
+  releaseFocus();
+  renderApp();
+};
 Actions.pasteJsonIntoDraft = async function() {
   let text = "";
   try { text = await navigator.clipboard.readText(); }

@@ -2029,9 +2029,13 @@ const state = {
   detailFrom: null,
   /* The link this browser visit arrived on, for handing to the app. */
   arrivalLink: null,
-  openAppCopied: false,
+  arrivalSearch: "",
+  /* "copied" once Open in App has been pressed; "left" when the server also
+     took the hand-over, "copied" alone when only the clipboard has it. */
+  openAppState: "",
   openAppDismissed: false,
-  pasteOffer: false,
+  /* In the installed app: a link the browser left for it, not yet opened. */
+  handoff: null,
   shareId: null,
   scheduledFor: null,
   groceryRange: { start: "", end: "" },
@@ -2546,7 +2550,10 @@ function readIntentFromUrl() {
   /* The link exactly as it arrived, kept before the address bar is tidied,
      so a browser visit can hand it on to the installed app. */
   if (intent && intent.type !== "push") {
-    try { state.arrivalLink = appUrl() + window.location.search; } catch (e) {}
+    try {
+      state.arrivalSearch = String(window.location.search || "");
+      state.arrivalLink = appUrl() + state.arrivalSearch;
+    } catch (e) {}
   }
   if (intent && window.history && window.history.replaceState) {
     try { window.history.replaceState({}, "", window.location.pathname); } catch (e) {}
@@ -3411,26 +3418,31 @@ function installedApp() {
 /* ---- handing a link from the browser to the installed app --------------
    A link or a scanned code opens in Safari or Chrome, never in the app on
    the home screen, and no web page is allowed to launch that app. So the
-   hand-over goes through the clipboard: the browser offers to copy the link,
-   and the app offers to open whatever link was copied. */
+   hand-over goes through the server: the browser leaves the link there for a
+   few minutes (and on the clipboard as a fallback), and the app, opened a
+   moment later, shows its button only if something was left for it. */
 function touchDevice() {
   if (onIOS()) return true;
   try { return window.matchMedia("(pointer: coarse)").matches; } catch (e) { return false; }
 }
 function OpenAppBannerHTML() {
   if (installedApp()) {
-    if (!state.pasteOffer) return "";
+    /* Only ever drawn when the browser actually left something. */
+    if (!state.handoff) return "";
     return '<div class="openapp-bar' + (tabsVisible() ? " over-tabs" : "") + '">' +
-      '<button class="btn btn-primary btn-sm openapp-go" onclick="Actions.openCopiedLink()">' +
-        icon("link", 14) + ' Open copied link</button>' +
+      '<span class="openapp-text">A link is waiting from your browser.</span>' +
+      '<button class="btn btn-primary btn-sm openapp-go" onclick="Actions.openHandoff()">' +
+        icon("link", 14) + ' Open link</button>' +
       '<button class="icon-btn openapp-x" aria-label="Dismiss" onclick="Actions.dismissOpenApp()">' + icon("x", 16) + '</button>' +
     '</div>';
   }
   if (!state.arrivalLink || state.openAppDismissed || !touchDevice()) return "";
-  const copied = !!state.openAppCopied;
+  const st = state.openAppState;
   return '<div class="openapp-bar' + (tabsVisible() ? " over-tabs" : "") + '">' +
-    (copied
-      ? '<span class="openapp-text">Link copied. Open <b>Kindred Cupboard</b> from your home screen and tap <b>Open copied link</b>.</span>'
+    (st === "left"
+      ? '<span class="openapp-text">Now open <b>Kindred Cupboard</b> from your home screen. The link will be waiting there.</span>'
+      : st === "copied"
+      ? '<span class="openapp-text">Link copied. Open <b>Kindred Cupboard</b> from your home screen, then <b>Open Copied Link</b> in the menu.</span>'
       : '<span class="openapp-text">Have the app?</span>' +
         '<button class="btn btn-primary btn-sm openapp-go" onclick="Actions.copyForApp()">' +
           icon("link", 14) + ' Open in App</button>') +
@@ -3441,21 +3453,32 @@ function renderOpenAppBanner() {
   const el = document.getElementById("openapp-root");
   if (el) el.innerHTML = OpenAppBannerHTML();
 }
-/* In the installed app: offered for a few seconds each time it is opened or
-   brought back, and always from the menu. Reading the clipboard needs a tap,
-   which is why it is a button and not something done on arrival. */
-const PASTE_OFFER_MS = 12000;
-let pasteOfferTimer = null;
-function offerCopiedLink() {
-  if (!installedApp()) return;
-  state.pasteOffer = true;
-  renderOpenAppBanner();
-  if (pasteOfferTimer) clearTimeout(pasteOfferTimer);
-  pasteOfferTimer = setTimeout(function () {
-    pasteOfferTimer = null;
-    state.pasteOffer = false;
-    renderOpenAppBanner();
-  }, PASTE_OFFER_MS);
+/* In the installed app, each time it is opened or brought back: ask the
+   server whether the browser on this phone left a link a moment ago. The
+   button is drawn only if it did. Quiet on any failure - this is a
+   convenience, and the menu still has Open Copied Link. */
+let handoffAsking = false;
+async function checkHandoff() {
+  if (!installedApp() || handoffAsking) return;
+  handoffAsking = true;
+  try {
+    const res = await API("handoff/take", {});
+    const link = res && res.link;
+    const intent = link ? intentFromSearch(link) : null;
+    if (intent && intent.type !== "push") { state.handoff = link; renderOpenAppBanner(); }
+  } catch (e) { /* nothing waiting, as far as anyone can tell */ }
+  finally { handoffAsking = false; }
+}
+/* Where a link from outside goes once the app has it, by either route. */
+async function openOutsideIntent(intent) {
+  /* Signed out, a recipe still opens - links are readable without an
+     account - and a friend code waits for the sign-in, as it would have. */
+  if (!state.session && intent.type !== "recipe") {
+    stashIntent(intent);
+    toast("Sign in and the friend request will be waiting");
+    return;
+  }
+  await Actions.beginIntent(intent);
 }
 /* A recipe or friend link of ours out of whatever text was copied. Anything
    else - another site, a notification target, plain words - is not one. */
@@ -5201,11 +5224,11 @@ function DetailViewHTML(r) {
       tags +
       prov +
       '<div id="recipe-body">' + RecipeBodyHTML(r) + '</div>' +
-      /* Temporary: hands the recipe over as a .json file, to be edited
-         elsewhere and brought back through Import .json on the editor. */
+      /* Temporary: puts the recipe on the clipboard as JSON, to be reworked
+         in a chat and brought back through Paste .json on the editor. */
       '<div class="json-tools">' +
-        '<button class="btn btn-sm" onclick="Actions.exportRecipeJson(\\'' + r.recipeId + '\\')">' +
-          icon("download", 14) + ' Export .json</button>' +
+        '<button class="btn btn-sm" onclick="Actions.copyRecipeJson(\\'' + r.recipeId + '\\')">' +
+          icon("clipboard", 14) + ' Copy .json</button>' +
       '</div>' +
     '</div>';
 }
@@ -5354,14 +5377,12 @@ function EditViewHTML() {
       '</div>' +
       '<div id="change-banner">' + ChangeBannerHTML() + '</div>' +
       '<h1 class="detail-title font-display" style="font-size:23px">' + (isNew ? "New recipe" : "Edit recipe") + '</h1>' +
-      /* Temporary: replaces what is in the form with a .json file. The cook
-         log and the ratings live apart from the recipe and are not touched;
-         nothing is saved until Save recipe is pressed. */
+      /* Temporary: replaces what is in the form with JSON from the clipboard.
+         The cook log and the ratings live apart from the recipe and are not
+         touched; nothing is saved until Save recipe is pressed. */
       (isNew ? "" :
         '<div class="json-tools json-tools-edit">' +
-          '<button class="btn btn-sm" onclick="Actions.pickJsonForDraft()">' + icon("upload", 14) + ' Import .json</button>' +
-          '<input type="file" id="f-json-file" accept=".json,application/json,text/plain" style="display:none" ' +
-            'onchange="Actions.importJsonIntoDraft(this)" />' +
+          '<button class="btn btn-sm" onclick="Actions.pasteJsonIntoDraft()">' + icon("clipboard", 14) + ' Paste .json</button>' +
         '</div>') +
       '<div class="field"><label>Who can see this recipe</label>' +
         '<div class="seg">' +
@@ -7350,34 +7371,37 @@ Actions.copyAppUrl = async function() {
   await copyToClipboard(appUrl(), "Link copied");
 };
 /* The browser-to-app hand-over: see OpenAppBannerHTML. */
+/* Both at once: the copy has to happen inside the tap, and the server
+   hand-over is what lets the app show its button only when there is
+   something to open. The clipboard stays as the fallback for when the two
+   requests do not match up - a phone hopping from Wi-Fi to cellular. */
 Actions.copyForApp = async function() {
   if (!state.arrivalLink) return;
-  const ok = await copyToClipboard(state.arrivalLink, "Link copied");
-  if (ok) { state.openAppCopied = true; renderOpenAppBanner(); }
+  const copied = copyToClipboard(state.arrivalLink, "Link copied");
+  let left = false;
+  try { await API("handoff/put", { link: state.arrivalSearch }); left = true; } catch (e) { left = false; }
+  const ok = await copied;
+  state.openAppState = left ? "left" : (ok ? "copied" : "");
+  renderOpenAppBanner();
 };
 Actions.dismissOpenApp = function() {
   state.openAppDismissed = true;
-  state.pasteOffer = false;
-  if (pasteOfferTimer) { clearTimeout(pasteOfferTimer); pasteOfferTimer = null; }
+  state.handoff = null;
   renderOpenAppBanner();
+};
+Actions.openHandoff = async function() {
+  const intent = state.handoff ? intentFromSearch(state.handoff) : null;
+  state.handoff = null;
+  renderOpenAppBanner();
+  if (intent && intent.type !== "push") await openOutsideIntent(intent);
 };
 Actions.openCopiedLink = async function() {
   let text = "";
   try { text = await navigator.clipboard.readText(); }
   catch (e) { toast("Couldn't read the clipboard"); return; }
-  state.pasteOffer = false;
-  if (pasteOfferTimer) { clearTimeout(pasteOfferTimer); pasteOfferTimer = null; }
-  renderOpenAppBanner();
   const intent = intentFromCopiedText(text);
   if (!intent) { toast("No Kindred Cupboard link was copied"); return; }
-  /* Signed out, a recipe still opens - links are readable without an
-     account - and a friend code waits for the sign-in, as it would have. */
-  if (!state.session && intent.type !== "recipe") {
-    stashIntent(intent);
-    toast("Sign in and the friend request will be waiting");
-    return;
-  }
-  await Actions.beginIntent(intent);
+  await openOutsideIntent(intent);
 };
 /* The same URL the recipe's QR code carries, for when the person you are
    sending it to is not standing next to you. */
@@ -8022,50 +8046,34 @@ Actions.exportAll = async function() {
   URL.revokeObjectURL(url);
 };
 
-/* --- one recipe as a .json file (temporary) --- */
-function fileSlug(title) {
-  const t = String(title || "recipe").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return (t || "recipe").slice(0, 60);
-}
-/* A phone gets the share sheet, which is where Save to Files lives; anything
-   with a mouse gets an ordinary download. */
-async function saveTextFile(name, text, type) {
-  try {
-    const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
-    if (coarse && typeof File === "function" && navigator.canShare && navigator.share) {
-      const file = new File([text], name, { type: type });
-      if (navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file] }); return; }
-        catch (e) { if (e && e.name === "AbortError") return; }
-      }
-    }
-  } catch (e) { /* fall through to the download */ }
-  const blob = new Blob([text], { type: "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-}
-Actions.exportRecipeJson = async function(id) {
-  await ensureBody(id);
+/* --- one recipe as JSON on the clipboard (temporary) --- */
+/* The body is fetched when a recipe opens, so it is normally here already
+   and the copy happens inside the tap - which iPhone insists on. Only if it
+   is not is there a wait, and then a second tap. */
+Actions.copyRecipeJson = async function(id) {
   const r = recipeById(id);
-  if (!hasBody(r)) { toast("That recipe could not be read"); return; }
+  if (!hasBody(r)) {
+    await ensureBody(id);
+    toast(hasBody(recipeById(id)) ? "Ready - tap Copy .json again" : "That recipe could not be read");
+    return;
+  }
   const body = normalizeBody(r);
   delete body.mergedFrom;
-  await saveTextFile(fileSlug(r.title) + ".json", JSON.stringify(body, null, 2), "application/json");
+  await copyToClipboard(JSON.stringify(body, null, 2), "Recipe JSON copied");
 };
-Actions.pickJsonForDraft = function() {
-  const el = document.getElementById("f-json-file");
-  if (el) { el.value = ""; el.click(); }
-};
-/* One recipe out of whatever the file holds: an object, an array of them,
+/* One recipe out of whatever was pasted: an object, an array of them,
    or the one-per-line format the bulk export writes. */
 function recipeFromJsonText(text) {
-  const clean = normalizeSmartQuotes(String(text || "")).trim();
+  /* Copied out of a chat it may arrive inside a code fence, or with a line
+     of chat either side of it; the object itself is what is wanted. */
+  const clean = normalizeSmartQuotes(String(text || "")).trim()
+    .replace(/^\x60\x60\x60[a-zA-Z]*\\s*/, "").replace(/\\s*\x60\x60\x60$/, "").trim();
   let raw = null;
   try { raw = JSON.parse(clean); } catch (e) { raw = null; }
+  if (raw === null) {
+    const a = clean.indexOf("{"), b = clean.lastIndexOf("}");
+    if (a >= 0 && b > a) { try { raw = JSON.parse(clean.slice(a, b + 1)); } catch (e) { raw = null; } }
+  }
   if (Array.isArray(raw)) raw = raw[0];
   if (raw && typeof raw === "object" && Array.isArray(raw.recipes)) raw = raw.recipes[0];
   if (raw && typeof raw === "object") return normalizeBody(raw);
@@ -8084,18 +8092,16 @@ function applyJsonToDraft(body) {
   d._tags = canonicalTags(body.tags || []);
   return true;
 }
-Actions.importJsonIntoDraft = function(input) {
-  const f = input && input.files && input.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = function () {
-    const body = recipeFromJsonText(reader.result);
-    if (!body || !applyJsonToDraft(body)) { toast("That file is not a recipe"); return; }
-    renderApp();
-    toast("Imported - check it over, then Save recipe");
-  };
-  reader.onerror = function () { toast("That file could not be read"); };
-  reader.readAsText(f);
+
+Actions.pasteJsonIntoDraft = async function() {
+  let text = "";
+  try { text = await navigator.clipboard.readText(); }
+  catch (e) { toast("Couldn't read the clipboard"); return; }
+  if (!text || !text.trim()) { toast("Clipboard is empty"); return; }
+  const body = recipeFromJsonText(text);
+  if (!body || !applyJsonToDraft(body)) { toast("That is not a recipe"); return; }
+  renderApp();
+  toast("Pasted - check it over, then Save recipe");
 };
 
 /* --- URL to recipe --- */
@@ -9974,7 +9980,7 @@ window.Actions = Actions;
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", function() {
     if (document.hidden) return;
-    offerCopiedLink();
+    checkHandoff();
     pollWatched();
     /* iOS gives the wake lock back the moment the page is hidden, so coming
        back to a recipe with cook mode still on means asking for it again. */
@@ -10314,7 +10320,7 @@ if (typeof document !== "undefined" && document.addEventListener) {
   const scanned = readIntentFromUrl();
   /* Opened from the home screen with no link of its own: perhaps there is
      one waiting on the clipboard. */
-  if (!scanned) offerCopiedLink();
+  if (!scanned) checkHandoff();
   state.session = loadSession();
   if (!state.session) {
     state.loading = false;
@@ -10926,7 +10932,12 @@ const LATER_TABLES = [
      close the same set. */
   "CREATE TABLE IF NOT EXISTS recipe_tabs ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
     "created_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (cookbook_id, recipe_id) )",
-  "CREATE INDEX IF NOT EXISTS idx_tabs_recipe ON recipe_tabs(recipe_id)"
+  "CREATE INDEX IF NOT EXISTS idx_tabs_recipe ON recipe_tabs(recipe_id)",
+  /* A link waiting to cross from the phone's browser to the installed app.
+     Keyed by a hash of where the request came from, never the address
+     itself, and gone after a few minutes or the first time it is taken. */
+  "CREATE TABLE IF NOT EXISTS link_handoffs ( match_key TEXT NOT NULL, link TEXT NOT NULL, created_at TEXT NOT NULL )",
+  "CREATE INDEX IF NOT EXISTS idx_handoffs_key ON link_handoffs(match_key, created_at)"
 ];
 
 /* What a kitchen is assumed to have until it says otherwise. Seeded on read
@@ -11041,7 +11052,7 @@ async function addLaterColumns(env) {
    already in the database will match, the bootstrap will be skipped, and the
    new thing will never be created. Bump SCHEMA_VERSION in the same change
    and the next request applies it. */
-const SCHEMA_VERSION = "schema-v4";
+const SCHEMA_VERSION = "schema-v5";
 async function schemaStamped(env) {
   try {
     const row = await env.DB.prepare(
@@ -11642,6 +11653,16 @@ function pushLater(ctx, work) {
   return p;
 }
 
+const HANDOFF_TTL_MS = 3 * 60 * 1000;
+const HANDOFF_LINK_RE = /^\?(r|f)=[A-Za-z0-9%._~-]{1,160}$/;
+async function handoffKey(request) {
+  let ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (ip.indexOf(":") >= 0) ip = ip.split(":").slice(0, 4).join(":");
+  const ua = request.headers.get("User-Agent") || "";
+  const device = (/\(([^)]*)\)/.exec(ua) || ["", ""])[1];
+  return sha256Hex("handoff|" + ip + "|" + device);
+}
+
 async function handleApi(route, body, env, request, ctx) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   await ensureSchema(env);
@@ -11889,6 +11910,39 @@ async function handleApi(route, body, env, request, ctx) {
      they generate no link in the first place, so a link to one is either
      stale or guessed. Ratings and comments are deliberately not included;
      those stay between linked cookbooks. */
+  /* ---- a link handed from the browser to the installed app ----
+     Safari and a home-screen app share no storage at all, and no page can
+     launch the app, so the hand-over goes through here. The browser leaves
+     the link against where it is coming from; the app, opened a moment later
+     on the same phone, asks whether anything was left for it. "Where" is
+     the network address - its first four groups for IPv6, which a phone
+     rotates within - plus the device part of the user agent, the bit in the
+     first brackets, which Safari and a home-screen app on the same phone
+     report the same. Only a hash of the two is stored. Nothing is kept but
+     a recipe or friend query string of our own, for a few minutes, once. */
+  if (route === "handoff/put") {
+    const link = String(body.link || "");
+    if (!HANDOFF_LINK_RE.test(link)) throw new ApiError(400, "That is not a Kindred Cupboard link.");
+    const key = await handoffKey(request);
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM link_handoffs WHERE match_key = ? OR created_at < ?")
+        .bind(key, new Date(now - HANDOFF_TTL_MS).toISOString()),
+      env.DB.prepare("INSERT INTO link_handoffs (match_key, link, created_at) VALUES (?, ?, ?)")
+        .bind(key, link, new Date(now).toISOString())
+    ]);
+    return jsonResponse({ waiting: true });
+  }
+  if (route === "handoff/take") {
+    const key = await handoffKey(request);
+    const row = await env.DB.prepare(
+      "SELECT link FROM link_handoffs WHERE match_key = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(key, new Date(Date.now() - HANDOFF_TTL_MS).toISOString()).first();
+    if (!row) return jsonResponse({ link: null });
+    await env.DB.prepare("DELETE FROM link_handoffs WHERE match_key = ?").bind(key).run();
+    return jsonResponse({ link: HANDOFF_LINK_RE.test(row.link) ? row.link : null });
+  }
+
   if (route === "recipe/public") {
     await throttleGuard(env, ["ip:" + ip]);
     const recipeId = cleanString(body.recipeId, 64);

@@ -503,6 +503,44 @@ h1, h2, h3, .font-display, .modal-head h3, .col-title, .empty-state p.title{
    the same terracotta as Favorite and Pin - one colour for "this is on",
    rather than a second shade that had to be learned separately. */
 .cook-btn.on{ color:#fff; border-color:#fff; background:var(--accent); }
+.tab-btn.on{ color:#fff; border-color:#fff; background:var(--accent); }
+/* The hand-over strip between the browser and the installed app. Fixed at
+   the foot of the screen, lifted clear of the tab bar when there is one. */
+.openapp-bar{ position:fixed; left:12px; right:12px; z-index:70;
+  bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+  display:flex; align-items:center; gap:10px; padding:10px 8px 10px 14px;
+  background:var(--card); border:1px solid var(--accent); border-radius:12px;
+  box-shadow:0 6px 20px rgba(42,35,32,.18); max-width:520px; margin:0 auto; }
+.openapp-bar.over-tabs{ bottom:calc(64px + var(--tab-pad-b,20px)); }
+.openapp-text{ flex:1; font-size:13.5px; line-height:1.35; color:var(--ink); }
+.openapp-go{ flex-shrink:0; }
+.openapp-bar .openapp-go:first-child{ margin-right:auto; }
+.openapp-x{ flex-shrink:0; color:var(--ink-muted); }
+.json-tools{ display:flex; justify-content:flex-end; margin:18px 0 6px; }
+.json-tools-edit{ justify-content:flex-start; margin:0 0 14px; }
+/* ---- recipe tabs ---- */
+/* Two across and three down on a phone, each row a third of what is left
+   between the title and the bar; wider screens take as many columns as fit. */
+.tab-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px;
+  grid-auto-rows:max(150px, calc((100dvh - 210px - var(--tab-pad-b,20px)) / 3)); }
+@media (min-width: 600px){
+  .tab-grid{ grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); grid-auto-rows:220px; }
+}
+.tab-card{ position:relative; display:flex; flex-direction:column; gap:8px; min-width:0; overflow:hidden;
+  background:var(--tile); border:1px solid var(--tan); border-radius:13px; padding:12px; cursor:pointer;
+  -webkit-user-select:none; user-select:none; }
+.tab-card:active{ border-color:var(--accent); }
+.tab-card-icon{ width:42px; height:42px; border-radius:10px; flex-shrink:0; }
+.tab-card-title{ font-size:17px; line-height:1.25; color:var(--accent); margin:0;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.tab-card-tags{ margin-top:auto; display:flex; flex-wrap:wrap; gap:4px; max-height:52px; overflow:hidden; }
+.tab-card-x{ position:absolute; top:6px; right:6px; width:32px; height:32px; border-radius:999px;
+  border:1px solid var(--tan); background:var(--card); color:var(--ink-muted); cursor:pointer;
+  display:flex; align-items:center; justify-content:center; padding:0; }
+.tabbar .tab-ico{ position:relative; display:inline-flex; }
+.tabbar .tab .tab-n{ position:absolute; top:-5px; right:-10px; min-width:16px; height:16px; padding:0 4px;
+  border-radius:999px; background:var(--accent); color:#fff; font-size:10px; font-weight:700;
+  line-height:16px; text-align:center; }
 /* A private recipe has no link to hand out. The button stays where it is and
    greys rather than vanishing, so the corner does not reshuffle between one
    recipe and the next. */
@@ -574,6 +612,9 @@ h1, h2, h3, .font-display, .modal-head h3, .col-title, .empty-state p.title{
 .step-list li{ display:flex; gap:10px; }
 .step-num{ color:var(--accent); font-weight:700; }
 .step-text{ font-size:15px; line-height:1.55; }
+/* An amount the recipe worked out for the current scale, set apart from the
+   words around it so it reads as the number to measure. */
+.step-qty{ font-weight:700; color:var(--accent); white-space:nowrap; }
 .step-timer{ display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--ink-muted); margin-left:6px; }
 
 .notes-box{ background:var(--card-alt); border:1px solid var(--border-light); border-radius:11px; padding:14px; font-size:14px; color:var(--ink-muted); margin-bottom:26px; }
@@ -1454,6 +1495,7 @@ body.tabs-down .toast{ bottom:calc(16px + var(--tab-pad-b,20px)); }
 <div id="app"><div class="boot-splash"><img src="/logo-v2.png" alt="Kindred Cupboard" /><div class="boot-say"></div></div></div>
 <div class="sb-scrim"></div>
 <div id="tabbar-root"></div>
+<div id="openapp-root"></div>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
@@ -1481,7 +1523,7 @@ Follow this schema exactly:
     }
   ],
   "steps": [
-    { "text": string, "timerMinutes": number | null }
+    { "text": string, "timerMinutes": number | null }   // amounts written as {Ingredient Name} markers, see rule 10
   ],
   "notes": ""
 }
@@ -1496,12 +1538,13 @@ Rules:
 7. Everything about the state or preparation of an ingredient belongs in its notes, never in its name. That covers descriptive words (all-purpose, chopped, minced, diced, finely grated, thinly sliced, room temperature) and temporal ones (melted, warm, softened, chilled, divided). "1 cup butter, melted" is name "Butter", notes "melted". "2 cloves garlic, minced" is name "Garlic", notes "minced". The exception is where the word is part of what you buy rather than what you do to it: All-Purpose Flour and Smoked Paprika are shelf names and stay whole.
 8. Where the ingredient offers a choice, the name is the primary thing and the alternative goes in the notes. "milk or non-dairy milk" is name "Milk", notes "or non-dairy milk". "butter or margarine" is name "Butter", notes "or margarine". Never put "or" in an ingredient name.
 9. Split the method into genuinely separate steps, not one paragraph. Include timerMinutes whenever a step names a cook/rest/chill time; otherwise null.
-10. Tags come from the fixed list at the end of this prompt. Copy each one exactly as written there, capitalization included. Do not invent a tag, do not reword one, and leave out anything that is not on the list. The words before a colon are the category path, not tags; the words after the colon are the tags.
-11. Be generous. Include every tag that genuinely applies: meal types, region and flavor, effort, diet, each significant ingredient, occasion or season, and every cooking method and piece of equipment involved. Twenty or more tags is normal and welcome. They exist only to make the recipe easy to find again, so more is better.
-12. Where a dish suits more than one answer, give every one. A hash eaten at breakfast and at dinner gets Breakfast and Dinner both. A stew that is a main and a soup gets both.
-13. Only tag what is actually true of the recipe. A wrong tag is worse than a missing one.
-14. Do not add any other fields. No id, no cookLog, no dates.
-15. Output must be valid JSON on one line.
+10. Never write an ingredient amount as a number in a step. Write a marker instead: the ingredient's name exactly as it appears in the ingredients list, inside curly braces. "Whisk {Eggs} eggs into {Whole Milk} milk." The app swaps each marker for the amount, scaled to however many servings are being made, so never also write the quantity beside it. Where a step uses only part of an ingredient, add the share after an asterisk: "Stir in {Unsalted Butter*1/2} butter" for half of it, and "{Unsalted Butter*1/2}" again where the rest goes in. Use markers only for ingredients in the list, and use curly braces for nothing else. Temperatures, times and pan sizes stay as plain numbers.
+11. Tags come from the fixed list at the end of this prompt. Copy each one exactly as written there, capitalization included. Do not invent a tag, do not reword one, and leave out anything that is not on the list. The words before a colon are the category path, not tags; the words after the colon are the tags.
+12. Be generous. Include every tag that genuinely applies: meal types, region and flavor, effort, diet, each significant ingredient, occasion or season, and every cooking method and piece of equipment involved. Twenty or more tags is normal and welcome. They exist only to make the recipe easy to find again, so more is better.
+13. Where a dish suits more than one answer, give every one. A hash eaten at breakfast and at dinner gets Breakfast and Dinner both. A stew that is a main and a soup gets both.
+14. Only tag what is actually true of the recipe. A wrong tag is worse than a missing one.
+15. Do not add any other fields. No id, no cookLog, no dates.
+16. Output must be valid JSON on one line.
 
 TAG LIST - the only tags you may use:
 {{TAG_LIST}}
@@ -1565,6 +1608,8 @@ const ICONS = {
   shareIos: '<path d="M8.5 10.5H6A1.8 1.8 0 0 0 4.2 12.3v7A1.8 1.8 0 0 0 6 21.1h12a1.8 1.8 0 0 0 1.8-1.8v-7a1.8 1.8 0 0 0-1.8-1.8h-2.5"/><line x1="12" y1="2.9" x2="12" y2="14.6"/><polyline points="8.4 6.4 12 2.9 15.6 6.4"/>',
   /* Cook mode. A flame reads as "this is the cooking one" at 16px where a
      screen or a lightbulb reads as settings. */
+  /* Two cards, one behind the other: a recipe held open as a tab. */
+  tabs: '<rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/>',
   flame: '<path d="M12 2.8c.5 2.9 2 4.1 3.2 5.6a6.6 6.6 0 0 1 1.6 4.3 4.8 4.8 0 0 1-9.6 0c0-1.5.6-2.8 1.5-3.7.3 1 .8 1.7 1.5 2.1.3-3-.3-5.5 1.8-8.3z"/>',
   inbox: '<path d="M3 12h4l2 3h6l2-3h4"/><path d="M5 5h14l2 7v7H3v-7z"/>',
   /* The three tabs along the foot. A scroll for the recipes, a month grid for
@@ -1647,6 +1692,60 @@ function formatCustomary(value, unit) {
 function scaledVal(value, factor) {
   if (value == null || value === "") return null;
   return Number(value) * factor;
+}
+/* One ingredient's amount at a given multiplier, customary first with metric
+   in brackets after it. Either half may be missing; a countable thing whose
+   two halves say the same is written once. Returns the two parts so the list
+   can style the bracket and a step can run them together. */
+function amountParts(ing, factor) {
+  const has = function (v) { return v !== "" && v != null && !isNaN(Number(v)); };
+  const c = has(ing.customaryValue) ? formatCustomary(scaledVal(ing.customaryValue, factor), ing.customaryUnit) : "";
+  const m = has(ing.metricValue) ? formatMetric(scaledVal(ing.metricValue, factor), ing.metricUnit) : "";
+  if (c && m) return c === m ? { main: c, alt: "" } : { main: c, alt: m };
+  return { main: c || m || "", alt: "" };
+}
+function amountText(ing, factor) {
+  const p = amountParts(ing, factor);
+  return p.alt ? p.main + " (" + p.alt + ")" : p.main;
+}
+/* The share after an asterisk in a step marker: 1/2, 0.5 or 1 1/2. */
+function markerShare(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return 1;
+  let total = 0;
+  const parts = t.split(/\\s+/);
+  for (let i = 0; i < parts.length; i++) {
+    const f = parts[i].split("/");
+    const v = f.length === 2 ? Number(f[0]) / Number(f[1]) : Number(f[0]);
+    if (!isFinite(v) || v <= 0) return 1;
+    total += v;
+  }
+  return total > 0 ? total : 1;
+}
+/* A step's text with each {Ingredient Name} or {Ingredient Name*1/2} swapped
+   for that ingredient's amount at the current multiplier. A marker naming
+   nothing in the list is left as its bare name rather than as braces. Every
+   piece is escaped on the way through; only the wrapper is markup. */
+const STEP_MARKER = /\\{([^{}]{1,120})\\}/g;
+function stepTextHTML(text, ingredients, factor) {
+  const raw = String(text || "");
+  const byName = {};
+  (ingredients || []).forEach(function (ing) {
+    const k = String(ing.name || "").trim().toLowerCase();
+    if (k && !(k in byName)) byName[k] = ing;
+  });
+  let out = "", last = 0, m;
+  STEP_MARKER.lastIndex = 0;
+  while ((m = STEP_MARKER.exec(raw))) {
+    out += esc(raw.slice(last, m.index));
+    const star = m[1].lastIndexOf("*");
+    const name = (star >= 0 ? m[1].slice(0, star) : m[1]).trim();
+    const ing = byName[name.toLowerCase()];
+    const amt = ing ? amountText(ing, factor * markerShare(star >= 0 ? m[1].slice(star + 1) : "")) : "";
+    out += amt ? '<span class="step-qty">' + esc(amt) + '</span>' : esc(name);
+    last = m.index + m[0].length;
+  }
+  return out + esc(raw.slice(last));
 }
 /* A multiplier the way it would be written by hand: 6 rather than 6.00, and
    1.5 rather than 1.5000000000000002. Two decimals is as fine as the chip
@@ -1924,6 +2023,15 @@ const state = {
   activeListId: null,
   scheduleDraft: null,
   cookMode: false,
+  /* Recipe ids held open as tabs, newest first. Shared by the household. */
+  tabs: [],
+  /* Where the open recipe was reached from, so back goes back there. */
+  detailFrom: null,
+  /* The link this browser visit arrived on, for handing to the app. */
+  arrivalLink: null,
+  openAppCopied: false,
+  openAppDismissed: false,
+  pasteOffer: false,
   shareId: null,
   scheduledFor: null,
   groceryRange: { start: "", end: "" },
@@ -2418,19 +2526,28 @@ function toast(msg) {
    cookbook on the device yet the intent waits in storage until there is, so
    scanning a code and signing up in one go still ends where it meant to. */
 const INTENT_KEY = "recipeBoxPendingIntent";
+function intentFromSearch(search) {
+  const q = new URLSearchParams(search || "");
+  const r = q.get("r"), f = q.get("f"), n = q.get("n");
+  if (r) return { type: "recipe", recipeId: String(r).slice(0, 64) };
+  if (f) return { type: "friend", name: String(f).slice(0, 40) };
+  /* Where a tapped notification wants to go. Not a scanned code, so it is
+     never stashed for later - by the time there is a session to replay it
+     against, it is not news any more. */
+  if (n) return { type: "push", target: String(n).slice(0, 80) };
+  return null;
+}
 function readIntentFromUrl() {
   if (typeof window === "undefined" || !window.location) return null;
   let intent = null;
   try {
-    const q = new URLSearchParams(window.location.search || "");
-    const r = q.get("r"), f = q.get("f"), n = q.get("n");
-    if (r) intent = { type: "recipe", recipeId: String(r).slice(0, 64) };
-    else if (f) intent = { type: "friend", name: String(f).slice(0, 40) };
-    /* Where a tapped notification wants to go. Not a scanned code, so it is
-       never stashed for later - by the time there is a session to replay it
-       against, it is not news any more. */
-    else if (n) intent = { type: "push", target: String(n).slice(0, 80) };
+    intent = intentFromSearch(window.location.search || "");
   } catch (e) { return null; }
+  /* The link exactly as it arrived, kept before the address bar is tidied,
+     so a browser visit can hand it on to the installed app. */
+  if (intent && intent.type !== "push") {
+    try { state.arrivalLink = appUrl() + window.location.search; } catch (e) {}
+  }
   if (intent && window.history && window.history.replaceState) {
     try { window.history.replaceState({}, "", window.location.pathname); } catch (e) {}
   }
@@ -2577,6 +2694,7 @@ function applyLibrary(data) {
   state.meals = data.meals || [];
   state.groceryLists = data.groceryLists || [];
   state.exclusions = Array.isArray(data.exclusions) ? data.exclusions : [];
+  state.tabs = Array.isArray(data.tabs) ? data.tabs.map(function (t) { return t.recipeId; }) : [];
 }
 
 async function refreshLibrary(showLoading) {
@@ -3289,6 +3407,70 @@ function installedApp() {
       window.matchMedia("(display-mode: fullscreen)").matches;
   } catch (e) { return false; }
 }
+
+/* ---- handing a link from the browser to the installed app --------------
+   A link or a scanned code opens in Safari or Chrome, never in the app on
+   the home screen, and no web page is allowed to launch that app. So the
+   hand-over goes through the clipboard: the browser offers to copy the link,
+   and the app offers to open whatever link was copied. */
+function touchDevice() {
+  if (onIOS()) return true;
+  try { return window.matchMedia("(pointer: coarse)").matches; } catch (e) { return false; }
+}
+function OpenAppBannerHTML() {
+  if (installedApp()) {
+    if (!state.pasteOffer) return "";
+    return '<div class="openapp-bar' + (tabsVisible() ? " over-tabs" : "") + '">' +
+      '<button class="btn btn-primary btn-sm openapp-go" onclick="Actions.openCopiedLink()">' +
+        icon("link", 14) + ' Open copied link</button>' +
+      '<button class="icon-btn openapp-x" aria-label="Dismiss" onclick="Actions.dismissOpenApp()">' + icon("x", 16) + '</button>' +
+    '</div>';
+  }
+  if (!state.arrivalLink || state.openAppDismissed || !touchDevice()) return "";
+  const copied = !!state.openAppCopied;
+  return '<div class="openapp-bar' + (tabsVisible() ? " over-tabs" : "") + '">' +
+    (copied
+      ? '<span class="openapp-text">Link copied. Open <b>Kindred Cupboard</b> from your home screen and tap <b>Open copied link</b>.</span>'
+      : '<span class="openapp-text">Have the app?</span>' +
+        '<button class="btn btn-primary btn-sm openapp-go" onclick="Actions.copyForApp()">' +
+          icon("link", 14) + ' Open in App</button>') +
+    '<button class="icon-btn openapp-x" aria-label="Dismiss" onclick="Actions.dismissOpenApp()">' + icon("x", 16) + '</button>' +
+  '</div>';
+}
+function renderOpenAppBanner() {
+  const el = document.getElementById("openapp-root");
+  if (el) el.innerHTML = OpenAppBannerHTML();
+}
+/* In the installed app: offered for a few seconds each time it is opened or
+   brought back, and always from the menu. Reading the clipboard needs a tap,
+   which is why it is a button and not something done on arrival. */
+const PASTE_OFFER_MS = 12000;
+let pasteOfferTimer = null;
+function offerCopiedLink() {
+  if (!installedApp()) return;
+  state.pasteOffer = true;
+  renderOpenAppBanner();
+  if (pasteOfferTimer) clearTimeout(pasteOfferTimer);
+  pasteOfferTimer = setTimeout(function () {
+    pasteOfferTimer = null;
+    state.pasteOffer = false;
+    renderOpenAppBanner();
+  }, PASTE_OFFER_MS);
+}
+/* A recipe or friend link of ours out of whatever text was copied. Anything
+   else - another site, a notification target, plain words - is not one. */
+function intentFromCopiedText(text) {
+  const m = /https?:[^\\s<>"]+/.exec(String(text || ""));
+  if (!m) return null;
+  let u = null;
+  try { u = new URL(m[0]); } catch (e) { return null; }
+  let here = "";
+  try { here = new URL(appUrl()).host; } catch (e) { here = ""; }
+  if (here && u.host !== here) return null;
+  const intent = intentFromSearch(u.search);
+  return intent && intent.type !== "push" ? intent : null;
+}
+
 /* The six things a notification can be about, in the order the panel shows
    them. The keys are the server's; the words are ours. */
 const PUSH_KIND_LABELS = [
@@ -3503,6 +3685,8 @@ const TABS = [
   ["groceries", "checklist", "Groceries"]
 ];
 function activeTab() {
+  if (state.view === "recipeTabs") return "recipeTabs";
+  if (state.view === "detail" && state.detailFrom === "recipeTabs") return "recipeTabs";
   if (state.view === "calendar") return "calendar";
   if (state.view === "groceries" || state.view === "grocery") return "groceries";
   return "recipes";
@@ -3515,12 +3699,61 @@ function tabsVisible() {
 function TabBarHTML() {
   if (!tabsVisible()) return "";
   const cur = activeTab();
-  return '<nav class="tabbar">' + TABS.map(function (t) {
+  /* Tabs only takes a place on the bar while something is held open. */
+  const open = openTabIds().length;
+  const list = (open ? [["recipeTabs", "tabs", "Tabs"]] : []).concat(TABS);
+  return '<nav class="tabbar">' + list.map(function (t) {
     return '<button class="tab' + (t[0] === cur ? " on" : "") + '" ' +
       'aria-current="' + (t[0] === cur ? "page" : "false") + '" ' +
       'onclick="Actions.goTab(\\'' + t[0] + '\\')">' +
-      icon(t[1], 21) + '<span>' + t[2] + '</span></button>';
+      (t[0] === "recipeTabs"
+        ? '<span class="tab-ico">' + icon(t[1], 21) + '<span class="tab-n">' + open + '</span></span>'
+        : icon(t[1], 21)) +
+      '<span>' + t[2] + '</span></button>';
   }).join("") + '</nav>';
+}
+
+/* ---- recipe tabs -------------------------------------------------------- */
+/* Recipes held open side by side, like browser tabs. Stored against the
+   cookbook, so a tab opened on one phone is there on the other. A tab whose
+   recipe has gone from the box - deleted, or no longer shared - is skipped
+   rather than drawn as an empty card. */
+function openTabIds() {
+  return (state.tabs || []).filter(function (id) { return !!summaryById(id); });
+}
+function isTabbed(id) { return (state.tabs || []).indexOf(id) >= 0; }
+function TabToggleButtonHTML(r) {
+  const on = isTabbed(r.recipeId);
+  return '<button class="mark tab-btn' + (on ? " on" : "") + '" title="' +
+    (on ? "Close this recipe's tab" : "Keep this recipe open as a tab") + '" ' +
+    'onclick="Actions.toggleRecipeTab(\\'' + r.recipeId + '\\')">' + icon("tabs", 15) +
+    '<span>' + (on ? "Un-Tab" : "Tab") + '</span></button>';
+}
+function topTags(r, n) {
+  return (r.tags || []).slice().sort(tagOrder).slice(0, n);
+}
+function TabCardHTML(r) {
+  return '<div class="tab-card" role="button" tabindex="0" ' +
+      'onclick="Actions.openFromTab(\\'' + r.recipeId + '\\')">' +
+    '<button class="tab-card-x" title="Close tab" aria-label="Close tab" ' +
+      'onclick="event.stopPropagation(); Actions.closeRecipeTab(\\'' + r.recipeId + '\\')">' + icon("x", 16) + '</button>' +
+    '<img class="tab-card-icon" src="/icon-v2.png" alt="" />' +
+    '<div class="tab-card-title font-display">' + esc(r.title) + '</div>' +
+    '<div class="tab-card-tags">' + topTags(r, 3).map(function (t) {
+      return '<span class="tag">' + esc(t) + '</span>';
+    }).join("") + '</div>' +
+  '</div>';
+}
+function RecipeTabsViewHTML() {
+  const ids = openTabIds();
+  return '' +
+    '<div class="wrap">' +
+      '<div class="detail-top">' +
+        '<h1 class="detail-title font-display" style="margin:0">Tabs</h1>' +
+        '<span class="helper-text" style="margin:0">' + ids.length + ' open</span>' +
+      '</div>' +
+      '<div class="tab-grid">' + ids.map(function (id) { return TabCardHTML(summaryById(id)); }).join("") + '</div>' +
+    '</div>';
 }
 function renderTabBar() {
   const el = document.getElementById("tabbar-root");
@@ -3752,7 +3985,7 @@ function LibraryViewHTML() {
         '</div>' +
         '<div class="header-row2">' +
           '<p class="header-who"><b>' + esc(state.session.username) + '</b> · ' +
-            state.recipes.length + ' recipe' + (state.recipes.length === 1 ? "" : "s") + ' on the shelf</p>' +
+            '<span id="shelf-count">' + ShelfCountText() + '</span></p>' +
           /* Three ways out of the header: who you cook with, what has come
              in, and something new on the shelf. Friends sits first because
              it is the one the other two are about. */
@@ -3791,6 +4024,15 @@ function FilterButtonInnerHTML() {
 function updateResultsSection() {
   const el = document.getElementById("results-section");
   if (el) el.innerHTML = ResultsSectionHTML();
+  const count = document.getElementById("shelf-count");
+  if (count) count.textContent = ShelfCountText();
+}
+/* What the shelf is showing right now: the search, the tags, the household
+   picker all narrow it, and the count follows - not the size of the box. It
+   counts every match, including those past the first page of cards. */
+function ShelfCountText() {
+  const n = filteredRecipes().length;
+  return n + " recipe" + (n === 1 ? "" : "s") + " on the shelf";
 }
 /* The tag count lives outside the results block, so it needs its own nudge -
    otherwise the button keeps claiming filters that are no longer set. */
@@ -4835,19 +5077,19 @@ function RecipeBodyHTML(r, hideLog) {
     'onclick="Actions.editCustomScale()">' +
     (customTxt ? esc(customTxt) + 'x' : "Custom") + '</button>';
 
+  /* Customary first, metric in brackets - the same order the steps use. */
   const ingItems = r.ingredients.map(ing => {
-    const mv = scaledVal(ing.metricValue, scale);
-    const cv = scaledVal(ing.customaryValue, scale);
-    const alt = (ing.customaryValue !== "" && ing.customaryValue != null)
-      ? ' <span class="alt">(' + formatCustomary(cv, ing.customaryUnit) + ')</span>' : "";
-    return '<li><span class="ing-amt font-mono">' + formatMetric(mv, ing.metricUnit) + alt + '</span>' +
+    const amt = amountParts(ing, scale);
+    const alt = amt.alt ? ' <span class="alt">(' + esc(amt.alt) + ')</span>' : "";
+    return '<li><span class="ing-amt font-mono">' + esc(amt.main || "—") + alt + '</span>' +
       '<span>' + esc(ing.name) + (ing.notes ? ' <span class="alt">— ' + esc(ing.notes) + '</span>' : "") + '</span></li>';
   }).join("");
 
   const stepItems = r.steps.map((s, idx) => {
     const timer = (s.timerMinutes !== "" && s.timerMinutes != null)
       ? '<span class="step-timer">' + icon("clock", 12) + ' ' + s.timerMinutes + ' min</span>' : "";
-    return '<li><span class="step-num font-mono">' + (idx + 1) + '</span><span class="step-text">' + esc(s.text) + timer + '</span></li>';
+    return '<li><span class="step-num font-mono">' + (idx + 1) + '</span><span class="step-text">' +
+      stepTextHTML(s.text, r.ingredients, scale) + timer + '</span></li>';
   }).join("");
 
   return '' +
@@ -4892,6 +5134,7 @@ function DetailViewHTML(r) {
      together and the one that sends it somewhere else closes the row. */
   const action = '<div class="detail-top-actions">' +
     CookModeButtonHTML() +
+    TabToggleButtonHTML(r) +
     (r.ours
       ? '<button class="btn btn-sm" onclick="Actions.openEdit(\\'' + r.recipeId + '\\')">' + icon("pencil", 14) + ' Edit</button>'
       : "") +
@@ -4939,7 +5182,8 @@ function DetailViewHTML(r) {
   return '' +
     '<div class="wrap">' +
       '<div class="detail-top">' +
-        '<button class="back-link" onclick="Actions.backToLibrary()">' + icon("chevronLeft", 18) + ' Cupboard</button>' +
+        '<button class="back-link" onclick="Actions.backFromDetail()">' + icon("chevronLeft", 18) +
+          (state.detailFrom === "recipeTabs" ? ' Tabs' : ' Cupboard') + '</button>' +
         action +
       '</div>' +
       '<div id="change-banner">' + ChangeBannerHTML() + '</div>' +
@@ -4957,6 +5201,12 @@ function DetailViewHTML(r) {
       tags +
       prov +
       '<div id="recipe-body">' + RecipeBodyHTML(r) + '</div>' +
+      /* Temporary: hands the recipe over as a .json file, to be edited
+         elsewhere and brought back through Import .json on the editor. */
+      '<div class="json-tools">' +
+        '<button class="btn btn-sm" onclick="Actions.exportRecipeJson(\\'' + r.recipeId + '\\')">' +
+          icon("download", 14) + ' Export .json</button>' +
+      '</div>' +
     '</div>';
 }
 /* The one path every control inside the recipe body re-renders through:
@@ -5104,6 +5354,15 @@ function EditViewHTML() {
       '</div>' +
       '<div id="change-banner">' + ChangeBannerHTML() + '</div>' +
       '<h1 class="detail-title font-display" style="font-size:23px">' + (isNew ? "New recipe" : "Edit recipe") + '</h1>' +
+      /* Temporary: replaces what is in the form with a .json file. The cook
+         log and the ratings live apart from the recipe and are not touched;
+         nothing is saved until Save recipe is pressed. */
+      (isNew ? "" :
+        '<div class="json-tools json-tools-edit">' +
+          '<button class="btn btn-sm" onclick="Actions.pickJsonForDraft()">' + icon("upload", 14) + ' Import .json</button>' +
+          '<input type="file" id="f-json-file" accept=".json,application/json,text/plain" style="display:none" ' +
+            'onchange="Actions.importJsonIntoDraft(this)" />' +
+        '</div>') +
       '<div class="field"><label>Who can see this recipe</label>' +
         '<div class="seg">' +
           '<button class="' + (d.visibility === "private" ? "active" : "") + '" onclick="Actions.setDraftVisibility(\\'private\\')">' + icon("lock", 15) + ' ' + privateLabel() + '</button>' +
@@ -5133,6 +5392,8 @@ function EditViewHTML() {
       '<div class="subhead-row"><span class="small-label">Ingredients</span></div>' +
       '<div id="ingredients-container" oninput="Actions.growIngredients()" onchange="Actions.growIngredients()">' + ingredientsHTML + '</div>' +
       '<div class="subhead-row" style="margin-top:16px"><span class="small-label">Steps</span></div>' +
+      '<p class="helper-text step-marker-hint">Write <b>{Ingredient Name}</b> where an amount goes and the recipe ' +
+        'fills it in at whatever scale is picked. <b>{Butter*1/2}</b> uses half of it.</p>' +
       '<div id="steps-container" oninput="Actions.growSteps()" onchange="Actions.growSteps()">' + stepsHTML + '</div>' +
       '<div class="field" style="margin-top:16px"><label>Source URL (optional)</label>' +
         '<input type="url" id="f-source-url" inputmode="url" autocomplete="off" ' +
@@ -5467,13 +5728,17 @@ function CustomScaleModalHTML() {
 
 function LogCookModalHTML() {
   const r = getActiveRecipe();
+  const d = state._cookLogDraft || {};
   return modalShell("Log this cook",
     '<p class="helper-text">' + esc(r ? r.title : "") + ' — log it as often as you cook it. ' +
     'The comment is optional, and how your cookbook rates the dish is set on the recipe itself.</p>' +
-    '<div class="field"><label>Date cooked</label><input type="date" id="cl-date" value="' + todayStr() + '" /></div>' +
-    '<div class="field"><label>Comment (optional)</label><textarea id="cl-notes" rows="3" placeholder="Kids liked it, a bit salty..."></textarea></div>' +
+    '<div class="field"><label>Date cooked</label><input type="date" id="cl-date" value="' + esc(d.date || todayStr()) + '" /></div>' +
+    '<div class="field"><label>Comment (optional)</label><textarea id="cl-notes" rows="3" placeholder="Kids liked it, a bit salty...">' + esc(d.comment || "") + '</textarea></div>' +
     '<div class="edit-actions"><button class="btn" onclick="Actions.closeModal()">Cancel</button>' +
-    '<button class="btn btn-primary" onclick="Actions.saveCookLog()">Save to cook log</button></div>');
+    /* One press per opening. A slow save used to invite a second tap, and a
+       second tap was a second, identical entry. */
+    '<button id="cl-save" class="btn btn-primary"' + (state._cookLogBusy ? " disabled" : "") +
+      ' onclick="Actions.saveCookLog()">' + (state._cookLogBusy ? "Saving…" : "Save to cook log") + '</button></div>');
 }
 
 /* The Schedule frame: a day, how many you are feeding, and what that comes to
@@ -6383,6 +6648,7 @@ const MENU_TILES = [
   ["bell", "Notifications", "Actions.openNotifications()", "unread"],
   ["sync", "Refresh", "Actions.reload()", "none"],
   ["share", "Share App", "Actions.openModal(\\'shareApp\\')", "none"],
+  ["link", "Open Copied Link", "Actions.openCopiedLink()", "none"],
   ["gear", "Settings", "Actions.openModal(\\'account\\')", "none"],
   ["info", "Contact Info", "Actions.openModal(\\'contact\\')", "none"]
 ];
@@ -6558,7 +6824,7 @@ function renderModal() {
    That is exactly the failure that is hardest to report and hardest to
    diagnose, so the outer render says so instead of dying quietly. */
 function renderApp() {
-  try { renderAppInner(); }
+  try { renderAppInner(); renderOpenAppBanner(); }
   catch (e) {
     const app = document.getElementById("app");
     if (app) {
@@ -6599,6 +6865,12 @@ function renderAppInner() {
   else if (state.view === "calendar") app.innerHTML = CalendarViewHTML();
   else if (state.view === "groceries") app.innerHTML = GroceriesViewHTML();
   else if (state.view === "grocery") app.innerHTML = GroceryListViewHTML();
+  else if (state.view === "recipeTabs") {
+    /* The last tab closed - here or on the other phone - leaves nothing to
+       show, and the bar entry that led here has gone with it. */
+    if (!openTabIds().length) { state.view = "library"; app.innerHTML = LibraryViewHTML(); }
+    else app.innerHTML = RecipeTabsViewHTML();
+  }
   renderTabBar();
   renderModal();
   if (state.view === "calendar") placeCalendarScroll();
@@ -6845,7 +7117,8 @@ Actions.adminSetPassword = async function() {
 };
 
 /* --- navigation --- */
-Actions.openDetail = function(id, showLogs) {
+Actions.openDetail = function(id, showLogs, from) {
+  state.detailFrom = from || null;
   state.activeId = id; state.view = "detail"; state.scale = 1;
   state.customScaleOpen = false; state.customScale = ""; state._showAllLogs = !!showLogs;
   /* Reached from the box rather than from a calendar square, so the portions
@@ -6860,6 +7133,32 @@ Actions.openDetail = function(id, showLogs) {
 };
 Actions.backToLibrary = function() {
   state.view = "library"; state.scheduledFor = null; setWatch(null); renderApp();
+};
+/* Back from a recipe goes to wherever it was opened from: the tabs grid if
+   it came off a tab, the cupboard otherwise. */
+Actions.backFromDetail = function() {
+  if (state.detailFrom === "recipeTabs" && openTabIds().length) Actions.goTab("recipeTabs");
+  else Actions.backToLibrary();
+};
+Actions.openFromTab = function(id) { Actions.openDetail(id, false, "recipeTabs"); };
+/* Optimistic: the button flips at once and flips back if the server says no. */
+Actions.toggleRecipeTab = async function(id) {
+  const on = !isTabbed(id);
+  const before = state.tabs.slice();
+  state.tabs = on ? [id].concat(state.tabs) : state.tabs.filter(function (x) { return x !== id; });
+  renderApp();
+  try {
+    await API("tab/set", { recipeId: id, on: on });
+    toast(on ? "Added to tabs" : "Tab closed");
+  } catch (e) {
+    state.tabs = before;
+    renderApp();
+    toast(e.message);
+  }
+};
+Actions.closeRecipeTab = function(id) {
+  if (!isTabbed(id)) return;
+  return Actions.toggleRecipeTab(id);
 };
 Actions.openFriends = function() {
   state.view = "friends";
@@ -7049,6 +7348,36 @@ async function copyToClipboard(text, okMsg) {
 }
 Actions.copyAppUrl = async function() {
   await copyToClipboard(appUrl(), "Link copied");
+};
+/* The browser-to-app hand-over: see OpenAppBannerHTML. */
+Actions.copyForApp = async function() {
+  if (!state.arrivalLink) return;
+  const ok = await copyToClipboard(state.arrivalLink, "Link copied");
+  if (ok) { state.openAppCopied = true; renderOpenAppBanner(); }
+};
+Actions.dismissOpenApp = function() {
+  state.openAppDismissed = true;
+  state.pasteOffer = false;
+  if (pasteOfferTimer) { clearTimeout(pasteOfferTimer); pasteOfferTimer = null; }
+  renderOpenAppBanner();
+};
+Actions.openCopiedLink = async function() {
+  let text = "";
+  try { text = await navigator.clipboard.readText(); }
+  catch (e) { toast("Couldn't read the clipboard"); return; }
+  state.pasteOffer = false;
+  if (pasteOfferTimer) { clearTimeout(pasteOfferTimer); pasteOfferTimer = null; }
+  renderOpenAppBanner();
+  const intent = intentFromCopiedText(text);
+  if (!intent) { toast("No Kindred Cupboard link was copied"); return; }
+  /* Signed out, a recipe still opens - links are readable without an
+     account - and a friend code waits for the sign-in, as it would have. */
+  if (!state.session && intent.type !== "recipe") {
+    stashIntent(intent);
+    toast("Sign in and the friend request will be waiting");
+    return;
+  }
+  await Actions.beginIntent(intent);
 };
 /* The same URL the recipe's QR code carries, for when the person you are
    sending it to is not standing next to you. */
@@ -7397,6 +7726,7 @@ Actions.openModal = function(name) {
   /* A word left in the friend search from last time would hide most of the
      list the moment the sheet opened. */
   if (name === "visibility") state.shareFriendSearch = "";
+  if (name === "logCook" && !state._cookLogBusy) state._cookLogDraft = null;
   if (name === "import") { state.importParsed = []; state.importErrors = []; state.importFileName = null; state.importVisibility = ""; }
   if (name === "urlToRecipe") {
     state.urlToRecipe = { mode: state._nextImportMode || "", url: "", text: "", prompt: "", generated: false };
@@ -7460,15 +7790,24 @@ Actions.setRating = async function(n) {
 
 /* --- cook log --- */
 Actions.saveCookLog = async function() {
+  /* Already on its way: a second tap is swallowed rather than sent. */
+  if (state._cookLogBusy) return;
   const r = getActiveRecipe();
   if (!r) return;
   const dateEl = document.getElementById("cl-date");
   const notesEl = document.getElementById("cl-notes");
   const date = (dateEl && dateEl.value) || todayStr();
   const comment = notesEl ? notesEl.value.trim() : "";
+  state._cookLogBusy = true;
+  state._cookLogDraft = { date: date, comment: notesEl ? notesEl.value : "" };
+  const btn = document.getElementById("cl-save");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
   try {
     await API("comment/add", { recipeId: r.recipeId, comment, cookedOn: date });
     state.modal = null;
+    state._cookLogBusy = false;
+    state._cookLogDraft = null;
+    renderModal();
     /* The log we hold for this recipe is now one entry short of the truth,
        so it is dropped and fetched again with the body still cached. */
     delete state.logs[r.recipeId];
@@ -7476,7 +7815,13 @@ Actions.saveCookLog = async function() {
     await reloadLog(r.recipeId);
     setWatch(r.recipeId);
     toast("Cook logged");
-  } catch (e) { state.modalError = e.message; renderModal(); }
+  } catch (e) {
+    /* Nothing was saved, so the button comes back for another go, and what
+       was typed is put back into the redrawn sheet. */
+    state._cookLogBusy = false;
+    if (state.modal === "logCook") { state.modalError = e.message; renderModal(); }
+    else toast(e.message);
+  }
 };
 Actions.deleteComment = async function(commentId) {
   if (!confirm("Delete this cook log entry?")) return;
@@ -7675,6 +8020,82 @@ Actions.exportAll = async function() {
   a.download = (hasActiveFilter() ? "kindred-cupboard-selected-" : "kindred-cupboard-export-") + todayStr() + ".txt";
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+};
+
+/* --- one recipe as a .json file (temporary) --- */
+function fileSlug(title) {
+  const t = String(title || "recipe").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (t || "recipe").slice(0, 60);
+}
+/* A phone gets the share sheet, which is where Save to Files lives; anything
+   with a mouse gets an ordinary download. */
+async function saveTextFile(name, text, type) {
+  try {
+    const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    if (coarse && typeof File === "function" && navigator.canShare && navigator.share) {
+      const file = new File([text], name, { type: type });
+      if (navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file] }); return; }
+        catch (e) { if (e && e.name === "AbortError") return; }
+      }
+    }
+  } catch (e) { /* fall through to the download */ }
+  const blob = new Blob([text], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+}
+Actions.exportRecipeJson = async function(id) {
+  await ensureBody(id);
+  const r = recipeById(id);
+  if (!hasBody(r)) { toast("That recipe could not be read"); return; }
+  const body = normalizeBody(r);
+  delete body.mergedFrom;
+  await saveTextFile(fileSlug(r.title) + ".json", JSON.stringify(body, null, 2), "application/json");
+};
+Actions.pickJsonForDraft = function() {
+  const el = document.getElementById("f-json-file");
+  if (el) { el.value = ""; el.click(); }
+};
+/* One recipe out of whatever the file holds: an object, an array of them,
+   or the one-per-line format the bulk export writes. */
+function recipeFromJsonText(text) {
+  const clean = normalizeSmartQuotes(String(text || "")).trim();
+  let raw = null;
+  try { raw = JSON.parse(clean); } catch (e) { raw = null; }
+  if (Array.isArray(raw)) raw = raw[0];
+  if (raw && typeof raw === "object" && Array.isArray(raw.recipes)) raw = raw.recipes[0];
+  if (raw && typeof raw === "object") return normalizeBody(raw);
+  const lined = parseRecipeFile(clean);
+  return lined.parsed.length ? lined.parsed[0].body : null;
+}
+/* Swaps the recipe itself - name, tags, servings, nutrition, ingredients,
+   steps, notes - and keeps everything that is not the recipe: who can see
+   it, who it is shared with, and where it was copied from. */
+function applyJsonToDraft(body) {
+  const d = state.editDraft;
+  if (!d || !body) return false;
+  ["title", "description", "source", "servings", "macrosPerServing", "ingredients", "steps", "notes"]
+    .forEach(function (k) { d[k] = body[k]; });
+  d.tags = body.tags;
+  d._tags = canonicalTags(body.tags || []);
+  return true;
+}
+Actions.importJsonIntoDraft = function(input) {
+  const f = input && input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = function () {
+    const body = recipeFromJsonText(reader.result);
+    if (!body || !applyJsonToDraft(body)) { toast("That file is not a recipe"); return; }
+    renderApp();
+    toast("Imported - check it over, then Save recipe");
+  };
+  reader.onerror = function () { toast("That file could not be read"); };
+  reader.readAsText(f);
 };
 
 /* --- URL to recipe --- */
@@ -8188,7 +8609,8 @@ Actions.goTab = function(tab) {
   setWatch(null);
   state.calDay = null;
   state.groceryMergeFrom = null;
-  if (tab === "calendar") { state.view = "calendar"; state._calTop = null; }
+  if (tab === "recipeTabs") { state.view = "recipeTabs"; state.scheduledFor = null; }
+  else if (tab === "calendar") { state.view = "calendar"; state._calTop = null; }
   else if (tab === "groceries") {
     state.view = "groceries";
     state.activeListId = null;
@@ -9552,6 +9974,7 @@ window.Actions = Actions;
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", function() {
     if (document.hidden) return;
+    offerCopiedLink();
     pollWatched();
     /* iOS gives the wake lock back the moment the page is hidden, so coming
        back to a recipe with cook mode still on means asking for it again. */
@@ -9726,7 +10149,11 @@ if (typeof document !== "undefined" && document.addEventListener) {
      left through Save or Cancel on purpose - a stray drag must not be able
      to throw away an afternoon's typing. */
   const BACK_FROM = {
-    detail:  { go: function () { Actions.backToLibrary(); },   under: LibraryViewHTML },
+    detail:  { go: function () { Actions.backFromDetail(); },
+               under: function () {
+                 return state.detailFrom === "recipeTabs" && openTabIds().length
+                   ? RecipeTabsViewHTML() : LibraryViewHTML();
+               } },
     friends: { go: function () { Actions.backToLibrary(); },   under: LibraryViewHTML },
     grocery: { go: function () { Actions.backToGroceries(); }, under: GroceriesViewHTML }
   };
@@ -9885,6 +10312,9 @@ if (typeof document !== "undefined" && document.addEventListener) {
 (async function init() {
  try {
   const scanned = readIntentFromUrl();
+  /* Opened from the home screen with no link of its own: perhaps there is
+     one waiting on the clipboard. */
+  if (!scanned) offerCopiedLink();
   state.session = loadSession();
   if (!state.session) {
     state.loading = false;
@@ -10490,7 +10920,13 @@ const LATER_TABLES = [
      ordinary index can be searched for. Partial, so it holds only the rows
      that still need filling and is empty - costing nothing to store and
      nothing to maintain - the moment the backfill finishes. */
-  "CREATE INDEX IF NOT EXISTS idx_recipes_unfilled ON recipes(recipe_id) WHERE tags IS NULL"
+  "CREATE INDEX IF NOT EXISTS idx_recipes_unfilled ON recipes(recipe_id) WHERE tags IS NULL",
+  /* Recipes held open side by side, like browser tabs. They belong to the
+     cookbook rather than the person, so both halves of a household see and
+     close the same set. */
+  "CREATE TABLE IF NOT EXISTS recipe_tabs ( cookbook_id TEXT NOT NULL, recipe_id TEXT NOT NULL, " +
+    "created_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (cookbook_id, recipe_id) )",
+  "CREATE INDEX IF NOT EXISTS idx_tabs_recipe ON recipe_tabs(recipe_id)"
 ];
 
 /* What a kitchen is assumed to have until it says otherwise. Seeded on read
@@ -10605,7 +11041,7 @@ async function addLaterColumns(env) {
    already in the database will match, the bootstrap will be skipped, and the
    new thing will never be created. Bump SCHEMA_VERSION in the same change
    and the next request applies it. */
-const SCHEMA_VERSION = "schema-v3";
+const SCHEMA_VERSION = "schema-v4";
 async function schemaStamped(env) {
   try {
     const row = await env.DB.prepare(
@@ -11587,6 +12023,10 @@ async function handleApi(route, body, env, request, ctx) {
       ).bind(me.cookbookId),
       env.DB.prepare(
         "SELECT exclusions FROM cookbook_prefs WHERE cookbook_id = ?"
+      ).bind(me.cookbookId),
+      /* The household's open tabs, newest first. */
+      env.DB.prepare(
+        "SELECT recipe_id, created_by, created_at FROM recipe_tabs WHERE cookbook_id = ? ORDER BY created_at DESC"
       ).bind(me.cookbookId)
     ]);
     const at = (i) => (first[i] && first[i].results) || [];
@@ -11605,6 +12045,7 @@ async function handleApi(route, body, env, request, ctx) {
     const schedRows = at(12);
     const listRows = at(13);
     const prefRow = at(14)[0] || null;
+    const tabRows = at(15);
 
     const friendCbs = sinceRows.map(r => r.cb);
 
@@ -11732,6 +12173,7 @@ async function handleApi(route, body, env, request, ctx) {
       meals: shapeMeals(mealRaw.meals, mealLabel, me.cookbookId),
       groceryLists,
       exclusions,
+      tabs: tabRows.map(t => ({ recipeId: t.recipe_id, by: t.created_by, createdAt: t.created_at })),
       mates,
       friends,
       incoming: pendingIn.map(r => ({
@@ -11786,6 +12228,29 @@ async function handleApi(route, body, env, request, ctx) {
       ).bind(me.cookbookId, recipeId, kind, me.username, new Date().toISOString()).run();
     }
     return jsonResponse({ recipeId, kind, on: body.on !== false });
+  }
+
+  /* ---- open or close a recipe tab ----
+     Anything the cookbook can see can be held open. Closing never needs the
+     recipe to still be visible, so a tab on something since unshared can
+     always be taken down. */
+  if (route === "tab/set") {
+    const recipeId = cleanString(body.recipeId, 64);
+    if (!recipeId) throw new ApiError(400, "Which recipe?");
+    if (body.on === false) {
+      await env.DB.prepare(
+        "DELETE FROM recipe_tabs WHERE cookbook_id = ? AND recipe_id = ?"
+      ).bind(me.cookbookId, recipeId).run();
+      return jsonResponse({ recipeId, on: false });
+    }
+    if (!(await canSeeRecipe(env, me.cookbookId, recipeId))) {
+      throw new ApiError(403, "That recipe is not one you can open.");
+    }
+    const at = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO recipe_tabs (cookbook_id, recipe_id, created_by, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(me.cookbookId, recipeId, me.username, at).run();
+    return jsonResponse({ recipeId, on: true, createdAt: at });
   }
 
   /* ---- put a recipe on the calendar ----
@@ -12659,6 +13124,7 @@ async function handleApi(route, body, env, request, ctx) {
       env.DB.prepare("DELETE FROM pending_pins WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM recipe_shares WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM link_grants WHERE recipe_id = ?").bind(recipeId),
+      env.DB.prepare("DELETE FROM recipe_tabs WHERE recipe_id = ?").bind(recipeId),
       env.DB.prepare("DELETE FROM recipes WHERE recipe_id = ?").bind(recipeId)
     ]);
     return jsonResponse({ ok: true });

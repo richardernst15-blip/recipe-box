@@ -1029,6 +1029,21 @@ body.tabs-down .tabbar{ transform:translateY(calc(100% + 1px)); }
 .meal-dish-pick .btn{ grid-column:2; grid-row:1 / span 2; align-self:center;
   flex-shrink:0; padding-left:9px; padding-right:9px; }
 .meal-dish-pick .icon-btn{ grid-column:3; grid-row:1 / span 2; align-self:center; }
+/* The typed-dish row: the field takes the room the recipe name and the
+   servings shared, on one line beside Add. */
+.meal-dish-pick.meal-write{ grid-template-rows:auto; }
+.meal-dish-pick.meal-write input{ grid-column:1; grid-row:1; width:100%; min-width:0;
+  text-align:left; padding-left:10px; padding-right:10px; }
+.meal-dish-pick.meal-write .btn, .meal-dish-pick.meal-write .icon-btn{ grid-row:1; }
+.meal-write-btn{ margin-top:6px; }
+.meal-link-doors{ display:flex; flex-direction:column; gap:8px; }
+.meal-link-doors .btn{ justify-content:center; }
+.meal-guest-pick{ cursor:pointer; font:inherit; font-size:12.5px; }
+.meal-link{ margin-top:8px; }
+/* Recipes search, broken out by what matched. */
+.search-banner{ font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+  color:#fff; background:var(--sage-dark); border-radius:8px; padding:6px 10px; margin:16px 0 8px; }
+.search-banner:first-child{ margin-top:4px; }
 .meal-dup{ background:#fdf6e6; border:1px solid #e8d5a0; border-radius:9px; padding:8px 10px;
   font-size:12.5px; color:var(--ink); margin-top:6px; }
 .sched-banner{ display:flex; align-items:center; gap:10px; flex-wrap:wrap;
@@ -2260,7 +2275,17 @@ const state = {
   mealDishPick: {},
   /* The recipe on its way to a community meal, while that sheet is open. */
   mealAdd: null,
-  mealPastOpen: {}
+  mealPastOpen: {},
+  /* A meal opened by its link. linkMeal is the server's public view of it,
+     linkMealToken the link itself, linkMealGuest the name this device is
+     answering to, and linkMealStep whether the guest-name picker is open. */
+  linkMeal: null,
+  linkMealError: "",
+  linkMealToken: "",
+  linkMealGuest: null,
+  linkMealStep: "",
+  /* The Share Meal sheet: which meal, and its link once the server has it. */
+  mealShare: null
 };
 
 /* ---- dates, in the calendar's terms ----------------------------------- */
@@ -2712,9 +2737,11 @@ function toast(msg) {
 const INTENT_KEY = "recipeBoxPendingIntent";
 function intentFromSearch(search) {
   const q = new URLSearchParams(search || "");
-  const r = q.get("r"), f = q.get("f"), n = q.get("n");
+  const r = q.get("r"), f = q.get("f"), n = q.get("n"), m = q.get("m");
   if (r) return { type: "recipe", recipeId: String(r).slice(0, 64) };
   if (f) return { type: "friend", name: String(f).slice(0, 40) };
+  /* A community meal's link. Readable without an account, like a recipe. */
+  if (m) return { type: "meal", link: String(m).slice(0, 64) };
   /* Where a tapped notification wants to go. Not a scanned code, so it is
      never stashed for later - by the time there is a session to replay it
      against, it is not news any more. */
@@ -3654,7 +3681,7 @@ async function openOutsideIntent(intent) {
   releaseFocus();
   /* Signed out, a recipe still opens - links are readable without an
      account - and a friend code waits for the sign-in, as it would have. */
-  if (!state.session && intent.type !== "recipe") {
+  if (!state.session && intent.type !== "recipe" && intent.type !== "meal") {
     stashIntent(intent);
     toast("Sign in and the friend request will be waiting");
     return;
@@ -3898,7 +3925,8 @@ function activeTab() {
 /* Hidden while editing: the bar is one tap from throwing away a half-written
    recipe, and the Cancel button is right there for leaving on purpose. */
 function tabsVisible() {
-  return !!state.session && !state.loading && state.view !== "edit" && state.view !== "link";
+  return !!state.session && !state.loading && state.view !== "edit" && state.view !== "link" &&
+    state.view !== "mealLink";
 }
 function TabBarHTML() {
   if (!tabsVisible()) return "";
@@ -4068,15 +4096,41 @@ function matchesTags(r) {
   if (!state.activeTags.every(function (t) { return recipeHasTag(r, t); })) return false;
   return !(state.notTags || []).some(function (t) { return recipeHasTag(r, t); });
 }
+/* A search is answered in tiers: the recipe's name first, then what is in
+   it, then how it is tagged, then anything else it says about itself. Each
+   recipe lands in the first tier it matches and no other, and each tier is
+   ordered by whatever the sort menu says, the same as an unsearched shelf. */
+const SEARCH_GROUPS = [
+  ["name", "Fetched by Recipe Name"],
+  ["ingredient", "Fetched by Ingredient"],
+  ["tag", "Fetched by Tag"],
+  ["other", "Other Matches"]
+];
+function searchGroupOf(r, q) {
+  if (String(r.title || "").toLowerCase().indexOf(q) >= 0) return "name";
+  if (String(r.ingNames || "").toLowerCase().indexOf(q) >= 0) return "ingredient";
+  if ((r.tags || []).some(function (t) { return String(t).toLowerCase().indexOf(q) >= 0; })) return "tag";
+  if ([r.description, r.owner, r.household].join(" ").toLowerCase().indexOf(q) >= 0) return "other";
+  return null;
+}
+/* The tiers that have anything in them, in order. Empty when there is no
+   search, so callers can tell a searched shelf from a browsed one. */
+function searchGroups() {
+  const q = state.search.trim().toLowerCase();
+  if (!q) return [];
+  const by = {};
+  ownerFiltered().forEach(function (r) {
+    if (!matchesTags(r)) return;
+    const g = searchGroupOf(r, q);
+    if (g) (by[g] = by[g] || []).push(r);
+  });
+  return SEARCH_GROUPS.filter(function (g) { return by[g[0]] && by[g[0]].length; })
+    .map(function (g) { return { key: g[0], label: g[1], items: sortRecipes(by[g[0]]) }; });
+}
 function filteredRecipes() {
   const q = state.search.trim().toLowerCase();
-  const list = ownerFiltered().filter(r => {
-    if (!matchesTags(r)) return false;
-    if (!q) return true;
-    const hay = [r.title, r.description, r.owner, r.household, r.ingNames].concat(r.tags || []).join(" ").toLowerCase();
-    return hay.includes(q);
-  });
-  return sortRecipes(list);
+  if (q) return searchGroups().reduce(function (all, g) { return all.concat(g.items); }, []);
+  return sortRecipes(ownerFiltered().filter(matchesTags));
 }
 function sortRecipes(list) {
   const arr = list.slice();
@@ -4153,8 +4207,23 @@ function ResultsSectionHTML() {
   } else {
     const shown = Math.min(state.shown, results.length);
     const rest = results.length - shown;
-    body = '<div class="grid-recipes">' +
-      results.slice(0, shown).map(RecipeCardHTML).join("") + '</div>';
+    const groups = searchGroups();
+    if (groups.length) {
+      /* The page of cards is cut from the whole tiered list, so a banner only
+         appears once at least one of its recipes is on the page. */
+      let left = shown;
+      body = "";
+      groups.forEach(function (g) {
+        if (left <= 0) return;
+        const take = g.items.slice(0, left);
+        left -= take.length;
+        body += '<div class="search-banner">' + esc(g.label) + '</div>' +
+          '<div class="grid-recipes">' + take.map(RecipeCardHTML).join("") + '</div>';
+      });
+    } else {
+      body = '<div class="grid-recipes">' +
+        results.slice(0, shown).map(RecipeCardHTML).join("") + '</div>';
+    }
     if (rest > 0) {
       body += '<div class="load-more">' +
         '<button class="btn" onclick="Actions.showMore()">Load ' +
@@ -4602,15 +4671,19 @@ function mealWhen(m) {
 function MealGuestsHTML(m) {
   const canManage = m.myStatus === "owner";
   return '<div class="meal-guests">' + m.guests.map(function (g) {
-    const settled = g.status === "owner" || g.status === "accepted";
+    const settled = g.status === "owner" || g.status === "accepted" || g.status === "guest";
     const cls = "meal-guest" + (settled ? " on" : " waiting");
     /* Only somebody who has not answered can be withdrawn. Once they have
        accepted they are a guest, and a guest leaves under their own steam. */
     const drop = (canManage && g.status === "invited")
       ? '<button title="Un-invite" onclick="Actions.uninviteGuest(\\'' + m.mealId + '\\',\\'' +
           esc(g.label) + '\\')">' + icon("x", 13) + '</button>'
-      : "";
-    const mark = g.status === "owner" ? " (host)" : g.status === "invited" ? " — not answered" : "";
+      : (canManage && g.status === "guest" && g.guestId)
+        ? '<button title="Remove this guest" onclick="Actions.removeLinkGuest(\\'' + m.mealId + '\\',\\'' +
+            g.guestId + '\\')">' + icon("x", 13) + '</button>'
+        : "";
+    const mark = g.status === "owner" ? " (host)" : g.status === "invited" ? " — not answered" :
+      g.status === "guest" ? " (guest)" : "";
     return '<span class="' + cls + '">' + (settled ? icon("check", 12) : "") +
       esc(g.label) + esc(mark) + drop + '</span>';
   }).join("") + '</div>';
@@ -4665,6 +4738,12 @@ function MealPickRowHTML(pick, servId, addOnclick, clearOnclick) {
 function MealDishResultsHTML(m) {
   const q = String(state.mealDishSearch[m.mealId] || "");
   const picked = state.mealDishPick[m.mealId] || null;
+  if (picked && picked.write) {
+    return MealWriteRowHTML("meal-write-" + m.mealId, picked.title, "tile", m.mealId,
+      "Actions.addMealWrite(\\'" + m.mealId + "\\')",
+      "Actions.clearMealDishPick(\\'" + m.mealId + "\\')");
+  }
+  const write = MealWriteButtonHTML("Actions.startMealWrite(\\'" + m.mealId + "\\')");
   if (picked) {
     const counts = dishTitleCounts(m);
     const clash = counts[String(picked.title).trim().toLowerCase()] > 0;
@@ -4676,10 +4755,10 @@ function MealDishResultsHTML(m) {
         "Actions.addMealDish(\\'" + m.mealId + "\\')",
         "Actions.clearMealDishPick(\\'" + m.mealId + "\\')");
   }
-  if (!q.trim()) return "";
+  if (!q.trim()) return write;
   const all = mealDishMatches(q);
-  if (all.length === 0) return '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
-  return '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
+  if (all.length === 0) return write + '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
+  return write + '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
       /* The plus is the part of the row that looks like the button, so it is
          wired to the same thing the rest of the row does rather than being a
          decoration you can tap all day without effect. */
@@ -4733,17 +4812,7 @@ function MealTileHTML(m) {
   const owner = m.myStatus === "owner";
   const cls = "meal-tile" + (owner ? " meal-mine" : "") +
     (state.mealFocus === m.mealId ? " meal-focus" : "");
-  const head =
-    '<div class="meal-head">' +
-      '<div class="meal-title">' + icon("users", 16) + esc(m.title) + '</div>' +
-      '<div class="meal-when">' + esc(mealWhen(m)) + '</div>' +
-      '<div class="meal-host">Hosted by ' + esc(m.ownerLabel) +
-        (owner ? " — that's you" : "") + '</div>' +
-      /* Neither of these is required of a meal, so neither leaves a gap when
-         the host had nothing to say or everybody already knows the address. */
-      (m.location ? '<div class="meal-where">' + icon("mapPin", 13) + '<span>' + esc(m.location) + '</span></div>' : "") +
-      (m.description ? '<p class="meal-note">' + esc(m.description) + '</p>' : "") +
-    '</div>';
+  const head = MealHeadHTML(m, owner);
   /* An invitation is a question, so the tile asks it before it shows the
      sign-up box. You cannot put a dish on a table you have not said yes to. */
   const ask = invited
@@ -4757,7 +4826,11 @@ function MealTileHTML(m) {
         '</div>' +
       '</div>'
     : "";
-  const actions = '<div class="meal-actions">' +
+  const share = (owner || m.myStatus === "accepted")
+    ? '<button class="btn btn-sm" onclick="Actions.openMealShare(\\'' + m.mealId + '\\')">' +
+        icon("shareIos", 14) + ' Share Meal</button>'
+    : "";
+  const actions = '<div class="meal-actions">' + share +
     (owner
       ? '<button class="btn btn-sm" onclick="Actions.openMealGuests(\\'' + m.mealId + '\\')">' +
           icon("userPlus", 14) + ' Invite more</button>' +
@@ -6214,7 +6287,7 @@ function MealDraftDishesHTML() {
     ? '<ul class="meal-dishes">' + dr.dishes.map(function (d, i) {
         return '<li class="meal-dish">' +
           '<span class="what">' + esc(d.title) + '</span>' +
-          '<span class="meal-dish-who">' + esc(String(d.servings)) + ' ' + esc(d.unit) +
+          '<span class="meal-dish-who">' + (d.write ? "Write-in" : esc(String(d.servings)) + ' ' + esc(d.unit)) +
             '<button class="icon-btn" title="Take this off" ' +
             'onclick="Actions.removeMealDraftDish(' + i + ')">' + icon("x", 13) + '</button>' +
           '</span>' +
@@ -6239,6 +6312,11 @@ function MealDraftResultsHTML() {
   const dr = state.mealDraft;
   if (!dr) return "";
   const pick = dr.pick;
+  if (pick && pick.write) {
+    return MealWriteRowHTML("meal-write-draft", pick.title, "draft", "draft",
+      "Actions.addMealDraftDish()", "Actions.clearMealDishPick(\\'draft\\')");
+  }
+  const write = MealWriteButtonHTML("Actions.startMealWrite(\\'draft\\')");
   if (pick) {
     const clash = dr.dishes.filter(function (d) {
       return d.title.trim().toLowerCase() === pick.title.trim().toLowerCase();
@@ -6249,10 +6327,10 @@ function MealDraftResultsHTML() {
         "Actions.addMealDraftDish()", "Actions.clearMealDishPick(\\'draft\\')");
   }
   const q = String(dr.search || "");
-  if (!q.trim()) return "";
+  if (!q.trim()) return write;
   const all = mealDishMatches(q);
-  if (all.length === 0) return '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
-  return '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
+  if (all.length === 0) return write + '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
+  return write + '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
       return '<li class="groc-entry">' +
         '<button class="groc-entry-main" onclick="Actions.pickMealDish(\\'draft\\',\\'' +
           r.recipeId + '\\')">' +
@@ -6377,7 +6455,9 @@ function MealGuestsModalHTML() {
   const m = mealById(state.mealDraft && state.mealDraft.mealId);
   if (!m) return modalShell("Invite", "");
   const already = {};
-  m.guests.forEach(function (g) { already[g.label] = g.status; });
+  /* A link guest is a typed name, not a cookbook, so one called Matt says
+     nothing about whether the friend called Matt has been asked. */
+  m.guests.forEach(function (g) { if (g.status !== "guest") already[g.label] = g.status; });
   return modalShell("Invite to " + m.title,
     (state.modalError ? '<div class="modal-error">' + esc(state.modalError) + '</div>' : "") +
     MealFriendPickerHTML(already) +
@@ -6802,6 +6882,209 @@ function LinkRecipeViewHTML() {
     '</div>';
 }
 
+/* ---- a community meal, opened by its link ------------------------------
+   Readable by anyone holding the link. With no account there are two doors:
+   make one (and land on the meal with it), or come as a guest under a name.
+   A guest sees this page and nothing else - no tab bar, no recipe search -
+   because there is no cookbook behind them to search. */
+const MEAL_GUEST_KEY = "kcMealGuest:";
+function rememberedLinkGuest(link, meal) {
+  if (!meal || !link) return null;
+  let g = null;
+  try { g = JSON.parse(localStorage.getItem(MEAL_GUEST_KEY + link) || "null"); } catch (e) { g = null; }
+  if (!g || !g.guestId) return null;
+  const still = (meal.guests || []).filter(function (x) { return x.guestId === g.guestId; })[0];
+  return still ? { guestId: g.guestId, name: still.label } : null;
+}
+function rememberLinkGuest(link, g) {
+  try {
+    if (g) localStorage.setItem(MEAL_GUEST_KEY + link, JSON.stringify(g));
+    else localStorage.removeItem(MEAL_GUEST_KEY + link);
+  } catch (e) {}
+}
+function mealLinkUrl(link) { return appUrl() + "?m=" + encodeURIComponent(link); }
+function canNativeShare() {
+  return typeof navigator !== "undefined" && !!navigator && typeof navigator.share === "function";
+}
+
+/* The terracotta bar every meal wears: what, when, whose, where. */
+function MealHeadHTML(m, owner) {
+  return '<div class="meal-head">' +
+      '<div class="meal-title">' + icon("users", 16) + esc(m.title) + '</div>' +
+      '<div class="meal-when">' + esc(mealWhen(m)) + '</div>' +
+      '<div class="meal-host">Hosted by ' + esc(m.ownerLabel) +
+        (owner ? " — that's you" : "") + '</div>' +
+      /* Neither of these is required of a meal, so neither leaves a gap when
+         the host had nothing to say or everybody already knows the address. */
+      (m.location ? '<div class="meal-where">' + icon("mapPin", 13) + '<span>' + esc(m.location) + '</span></div>' : "") +
+      (m.description ? '<p class="meal-note">' + esc(m.description) + '</p>' : "") +
+    '</div>';
+}
+
+/* A dish with no recipe behind it: a name, typed. The same row on the tile,
+   the new-meal sheet and the guest page. Enter adds, like the button. */
+function MealWriteRowHTML(inputId, value, kind, mealId, addOnclick, clearOnclick) {
+  return '<div class="meal-dish-pick meal-write">' +
+    '<input type="text" id="' + inputId + '" maxlength="120" ' +
+      'aria-label="What you are bringing" placeholder="What are you bringing?" ' +
+      'value="' + esc(value || "") + '" ' +
+      'onkeydown="Actions.mealWriteKey(event, \\'' + kind + '\\', \\'' + mealId + '\\')" />' +
+    '<button class="btn btn-sm btn-meal" onclick="' + addOnclick + '">' +
+      icon("plus", 14) + ' Add</button>' +
+    (clearOnclick
+      ? '<button class="icon-btn" title="Never mind" onclick="' + clearOnclick + '">' + icon("x", 15) + '</button>'
+      : "") +
+  '</div>';
+}
+function MealWriteButtonHTML(onclick) {
+  return '<button class="btn btn-sm meal-write-btn" onclick="' + onclick + '">' +
+    icon("pencil", 14) + ' Write my own</button>';
+}
+
+function MealLinkGuestsHTML(m) {
+  return '<div class="meal-guests">' + m.guests.map(function (g) {
+    const mark = g.status === "owner" ? " (host)" : g.status === "guest" ? " (guest)" : "";
+    return '<span class="meal-guest on">' + icon("check", 12) + esc(g.label) + esc(mark) + '</span>';
+  }).join("") + '</div>';
+}
+
+/* The guest answering on this device can take back what they put down. The
+   server would let any link guest's dish go, but the x only sits on your own;
+   somebody else's is theirs to change, under their own name. */
+function MealLinkDishesHTML(m, g) {
+  if (!m.dishes.length) return '<p class="meal-none">Nobody has said what they are bringing yet.</p>';
+  const counts = dishTitleCounts(m);
+  return '<ul class="meal-dishes">' + m.dishes.map(function (d) {
+    const k = String(d.title).trim().toLowerCase();
+    const mine = !!(g && d.guestId && d.guestId === g.guestId);
+    return '<li class="meal-dish">' +
+      '<span class="what">' + esc(dishDisplayTitle(m, d, counts)) + '</span>' +
+      (counts[k] > 1 ? '<span class="lots">×' + counts[k] + '</span>' : "") +
+      '<span class="meal-dish-who">' + esc(d.label) +
+        (mine ? '<button class="icon-btn" title="Take this off" onclick="Actions.mealLinkRemoveDish(\\'' +
+          d.dishId + '\\')">' + icon("x", 13) + '</button>' : "") +
+      '</span>' +
+    '</li>';
+  }).join("") + '</ul>';
+}
+
+function MealLinkDoorHTML(m) {
+  return '<div class="meal-invite">' +
+    '<span class="grow">' + esc(m.ownerLabel) + ' has shared this meal with you. Say what you are ' +
+      'bringing with a Kindred Cupboard account, or with just your name.</span>' +
+    '<div class="meal-link-doors">' +
+      '<button class="btn btn-sm btn-meal" onclick="Actions.mealLinkSignIn()">' +
+        icon("userPlus", 14) + ' Sign up / Sign in</button>' +
+      '<button class="btn btn-sm" onclick="Actions.mealLinkAsGuest()">' +
+        icon("users", 14) + ' Join Community Meal as Guest</button>' +
+    '</div>' +
+  '</div>';
+}
+
+/* Who are you? Anyone already on the list by name is one tap away - that is
+   the whole of signing in as a guest - and anyone else types theirs. */
+function MealLinkPickHTML(m) {
+  const named = m.guests.filter(function (g) { return g.status === "guest"; });
+  return '<div class="meal-invite">' +
+    '<span class="grow">' + (named.length ? "Tap your name, or join under a new one." : "What should everyone call you?") + '</span>' +
+    (named.length
+      ? '<div class="meal-guests" style="margin:0">' + named.map(function (g) {
+          return '<button class="meal-guest on meal-guest-pick" onclick="Actions.mealLinkPickGuest(\\'' +
+            g.guestId + '\\')">' + esc(g.label) + '</button>';
+        }).join("") + '</div>'
+      : "") +
+    '<div class="meal-dish-pick meal-write" style="margin-top:0">' +
+      '<input type="text" id="ml-guest-name" maxlength="40" aria-label="Your name" placeholder="Your name" ' +
+        'onkeydown="Actions.mealWriteKey(event, \\'name\\', \\'\\')" />' +
+      '<button class="btn btn-sm btn-meal" onclick="Actions.mealLinkJoinGuest()">' +
+        icon("check", 14) + ' Join</button>' +
+      '<button class="icon-btn" title="Back" onclick="Actions.mealLinkBack()">' + icon("x", 15) + '</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function MealLinkViewHTML() {
+  const signedIn = !!state.session;
+  const back = '<button class="back-link" onclick="Actions.leaveMealLink()">' + icon("chevronLeft", 18) +
+    (signedIn ? ' Calendar' : ' Account Login') + '</button>';
+  const m = state.linkMeal;
+  if (!m) {
+    return '<div class="wrap"><div class="detail-top">' + back + '</div>' +
+      '<p style="padding-top:24px">' + esc(state.linkMealError || "That link could not be opened.") + '</p>' +
+    '</div>';
+  }
+  const g = signedIn ? null : state.linkMealGuest;
+  let ask = "";
+  if (signedIn) {
+    ask = '<div class="meal-invite">' +
+      '<span class="grow">' + esc(m.ownerLabel) + ' has shared this meal with you.</span>' +
+      '<div class="meal-invite-acts">' +
+        '<button class="btn btn-sm btn-meal" onclick="Actions.mealLinkJoinAccount()">' +
+          icon("check", 14) + ' Join this meal</button>' +
+      '</div>' +
+    '</div>';
+  } else if (!g) {
+    ask = state.linkMealStep === "pick" ? MealLinkPickHTML(m) : MealLinkDoorHTML(m);
+  }
+  const bring = g
+    ? '<div class="meal-sec">What you are bringing</div>' +
+      MealWriteRowHTML("ml-write", "", "guest", "", "Actions.mealLinkAddDish()", null)
+    : "";
+  const actions = g
+    ? '<div class="meal-actions" style="margin-top:12px">' +
+        '<button class="btn btn-sm" onclick="Actions.mealLinkShare()">' + icon("shareIos", 14) + ' Share Meal</button>' +
+        '<button class="btn btn-sm btn-ghost" onclick="Actions.mealLinkSwitch()">Not ' + esc(g.name) + '?</button>' +
+      '</div>'
+    : "";
+  const account = (!signedIn && g)
+    ? '<div class="link-join">' +
+        '<p class="helper-text" style="margin:0 0 8px">You are here as a guest, as ' + esc(g.name) +
+        '. A cookbook of your own lets you bring a recipe, and puts the dish on your own ' +
+        'calendar and shopping list.</p>' +
+        '<button class="btn btn-primary btn-block" onclick="Actions.mealLinkSignIn()">Create an account</button>' +
+      '</div>'
+    : "";
+  return '<div class="wrap">' +
+    '<div class="detail-top">' + back + '</div>' +
+    '<div class="meal-tile meal-link" id="meal-link">' +
+      MealHeadHTML(m, false) +
+      '<div class="meal-body">' +
+        ask +
+        '<div class="meal-sec">Who is coming</div>' +
+        MealLinkGuestsHTML(m) +
+        '<div class="meal-sec">On the table</div>' +
+        MealLinkDishesHTML(m, g) +
+        bring +
+        actions +
+      '</div>' +
+    '</div>' +
+    account +
+  '</div>';
+}
+
+/* Handing a meal on. The link comes from the server the first time anyone
+   asks, so the sheet opens straight away and fills in when it arrives. */
+function MealShareModalHTML() {
+  const sh = state.mealShare;
+  const m = sh ? mealById(sh.mealId) : null;
+  if (!sh || !m) return modalShell("Share Meal", '<p class="helper-text">Nothing to share.</p>');
+  const body = sh.link
+    ? '<div class="code-box font-mono">' + esc(mealLinkUrl(sh.link)) + '</div>' +
+      '<div class="meal-actions" style="margin-top:8px">' +
+        (canNativeShare()
+          ? '<button class="btn btn-sm btn-meal" onclick="Actions.shareMealLink()">' + icon("shareIos", 14) + ' Share</button>'
+          : "") +
+        '<button class="btn btn-sm" onclick="Actions.copyMealLink()">' + icon("copy", 14) + ' Copy link</button>' +
+      '</div>'
+    : sh.error
+      ? '<div class="modal-error">' + esc(sh.error) + '</div>'
+      : '<p class="helper-text">Getting the link…</p>';
+  return modalShell("Share Meal",
+    '<p class="helper-text">Anyone with this link can see ' + esc(m.title) + ' and join it, with a ' +
+    'Kindred Cupboard account or as a guest with just their name. A guest sees this meal and nothing else.</p>' +
+    body);
+}
+
 /* Link and code, side by side, carrying the same URL. Private recipes get
    neither: there is nothing to hand out, and offering a code for something
    nobody else can open would only mislead. */
@@ -7012,6 +7295,7 @@ function renderModal() {
   else if (state.modal === "contact") root.innerHTML = ContactModalHTML();
   else if (state.modal === "shareApp") root.innerHTML = ShareAppModalHTML();
   else if (state.modal === "share") root.innerHTML = ShareRecipeModalHTML();
+  else if (state.modal === "mealShare") root.innerHTML = MealShareModalHTML();
   else if (state.modal === "confirmIntent") root.innerHTML = ConfirmIntentModalHTML();
   else if (state.modal === "visibility") root.innerHTML = VisibilityModalHTML();
   else if (state.modal === "owner") root.innerHTML = OwnerModalHTML();
@@ -7068,6 +7352,13 @@ function renderAppInner() {
     renderTabBar();
     renderModal();
     topOnNewRecipe();
+    return;
+  }
+  /* Same for a meal's link: a guest with no account never gets further. */
+  if (state.view === "mealLink") {
+    app.innerHTML = MealLinkViewHTML();
+    renderTabBar();
+    renderModal();
     return;
   }
   if (!state.session) { app.innerHTML = WelcomeViewHTML(); renderTabBar(); renderModal(); return; }
@@ -8120,6 +8411,7 @@ Actions.beginIntent = async function(intent) {
     renderApp();
     return;
   }
+  if (intent.type === "meal") { await openMealLink(intent); return; }
   if (!state.session) { stashIntent(intent); return; }
   state.intent = intent;
   state.modalError = "";
@@ -8727,6 +9019,228 @@ Actions.leaveLinkView = function() {
   state.view = state.session ? "library" : "welcome";
   renderApp();
 };
+/* ---- a community meal, by its link -------------------------------------
+   Signed out, the link opens the meal page. Signed in and already at the
+   table, it opens the tile on the calendar. Signed in and not yet at the
+   table, it offers one button. A join asked for on the way through sign-up
+   is carried in the stashed intent and done as soon as there is a cookbook. */
+async function openMealLink(intent) {
+  const link = intent.link;
+  state.linkMealToken = link;
+  if (state.session && intent.join) {
+    try {
+      const j = await API("meal/join", { link: link });
+      await refreshLibrary(false);
+      toast(j.joined ? "You are on the guest list" : "You are already on this meal");
+      await openPushTarget("meal:" + j.mealId);
+      return;
+    } catch (e) { toast(e.message); }
+  }
+  try {
+    const p = await API("meal/public", { link: link });
+    state.linkMeal = p.meal;
+    state.linkMealError = "";
+  } catch (e) {
+    state.linkMeal = null;
+    state.linkMealError = e.message || "That link could not be opened.";
+  }
+  if (state.session && state.linkMeal) {
+    const mine = mealById(state.linkMeal.mealId);
+    if (mine && (mine.myStatus === "owner" || mine.myStatus === "accepted")) {
+      state.linkMeal = null;
+      await openPushTarget("meal:" + mine.mealId);
+      return;
+    }
+  }
+  state.linkMealGuest = state.session ? null : rememberedLinkGuest(link, state.linkMeal);
+  state.linkMealStep = "";
+  state.view = "mealLink";
+  renderApp();
+}
+Actions.leaveMealLink = function() {
+  state.linkMeal = null;
+  state.linkMealError = "";
+  state.linkMealStep = "";
+  state.view = state.session ? "calendar" : "welcome";
+  renderApp();
+};
+/* Off to the front door, with the meal waiting on the other side of it. */
+Actions.mealLinkSignIn = function() {
+  if (state.linkMealToken) stashIntent({ type: "meal", link: state.linkMealToken, join: true });
+  state.linkMeal = null;
+  state.linkMealStep = "";
+  state.view = "welcome";
+  renderApp();
+};
+Actions.mealLinkAsGuest = function() { state.linkMealStep = "pick"; renderApp(); };
+Actions.mealLinkBack = function() { state.linkMealStep = ""; renderApp(); };
+Actions.mealLinkPickGuest = function(guestId) {
+  const m = state.linkMeal;
+  const g = m && m.guests.filter(function (x) { return x.guestId === guestId; })[0];
+  if (!g) return;
+  state.linkMealGuest = { guestId: g.guestId, name: g.label };
+  rememberLinkGuest(state.linkMealToken, state.linkMealGuest);
+  state.linkMealStep = "";
+  renderApp();
+};
+Actions.mealLinkSwitch = function() {
+  rememberLinkGuest(state.linkMealToken, null);
+  state.linkMealGuest = null;
+  state.linkMealStep = "pick";
+  renderApp();
+};
+Actions.mealLinkJoinGuest = async function() {
+  const el = document.getElementById("ml-guest-name");
+  const name = String((el && el.value) || "").trim();
+  if (!name) { toast("Type your name first"); return; }
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    const res = await API("meal/guest/join", { link: state.linkMealToken, name: name });
+    state.linkMeal = res.meal;
+    state.linkMealGuest = { guestId: res.guestId, name: res.name };
+    rememberLinkGuest(state.linkMealToken, state.linkMealGuest);
+    state.linkMealStep = "";
+  } catch (e) { toast(e.message); }
+  finally { state.busy = false; }
+  renderApp();
+};
+Actions.mealLinkAddDish = async function() {
+  const g = state.linkMealGuest, m = state.linkMeal;
+  const el = document.getElementById("ml-write");
+  const title = String((el && el.value) || "").trim();
+  if (!g || !m) return;
+  if (!title) { toast("Say what you are bringing"); return; }
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    const res = await API("meal/guest/dish/add", { link: state.linkMealToken, guestId: g.guestId, title: title });
+    state.linkMeal = res.meal;
+    toast("On the table");
+  } catch (e) { toast(e.message); }
+  finally { state.busy = false; }
+  renderApp();
+};
+Actions.mealLinkRemoveDish = async function(dishId) {
+  try {
+    const res = await API("meal/guest/dish/remove", { link: state.linkMealToken, dishId: dishId });
+    state.linkMeal = res.meal;
+    toast("Taken off");
+  } catch (e) { toast(e.message); }
+  renderApp();
+};
+Actions.mealLinkJoinAccount = async function() {
+  try {
+    const j = await API("meal/join", { link: state.linkMealToken });
+    state.linkMeal = null;
+    await refreshLibrary(false);
+    toast("You are on the guest list");
+    await openPushTarget("meal:" + j.mealId);
+  } catch (e) { toast(e.message); renderApp(); }
+};
+/* The share sheet where there is one, the clipboard where there is not, and
+   the clipboard again if the sheet refuses for any reason but being closed. */
+async function shareMealUrl(url, title) {
+  if (canNativeShare()) {
+    try {
+      await navigator.share({ title: title || "Community Meal", text: "Join " + (title || "this meal") + " on Kindred Cupboard", url: url });
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+  }
+  await copyToClipboard(url, "Link copied");
+}
+Actions.mealLinkShare = async function() {
+  const m = state.linkMeal;
+  if (!state.linkMealToken) return;
+  await shareMealUrl(mealLinkUrl(state.linkMealToken), m && m.title);
+};
+Actions.openMealShare = async function(mealId) {
+  state.mealShare = { mealId: mealId, link: null, error: "" };
+  Actions.openModal("mealShare");
+  try {
+    const r = await API("meal/link", { mealId: mealId });
+    if (state.mealShare && state.mealShare.mealId === mealId) state.mealShare.link = r.link;
+  } catch (e) {
+    if (state.mealShare && state.mealShare.mealId === mealId) state.mealShare.error = e.message;
+  }
+  if (state.modal === "mealShare") renderModal();
+};
+Actions.shareMealLink = async function() {
+  const sh = state.mealShare;
+  const m = sh && mealById(sh.mealId);
+  if (!sh || !sh.link) return;
+  await shareMealUrl(mealLinkUrl(sh.link), m && m.title);
+};
+Actions.copyMealLink = async function() {
+  const sh = state.mealShare;
+  if (!sh || !sh.link) return;
+  await copyToClipboard(mealLinkUrl(sh.link), "Link copied");
+};
+Actions.removeLinkGuest = async function(mealId, guestId) {
+  const m = mealById(mealId);
+  const g = m && m.guests.filter(function (x) { return x.guestId === guestId; })[0];
+  if (!g) return;
+  if (!confirm("Remove " + g.label + " and everything they said they would bring?")) return;
+  try {
+    await API("meal/guest/remove", { mealId: mealId, guestId: guestId });
+    await refreshLibrary(false);
+    toast("Removed " + g.label);
+  } catch (e) { toast(e.message); }
+  renderApp();
+};
+
+/* ---- write my own ---------------------------------------------------- */
+/* Opens the typed-dish row in place of the search results, starting from
+   whatever was already in the search box - usually the thing nothing
+   matched. */
+Actions.startMealWrite = function(mealId) {
+  if (mealId === "draft") {
+    const dr = state.mealDraft;
+    if (!dr) return;
+    readMealDraftFields();
+    dr.pick = { write: true, title: String(dr.search || "").trim() };
+    renderModal();
+  } else {
+    state.mealDishPick[mealId] = { write: true, title: String(state.mealDishSearch[mealId] || "").trim() };
+    renderApp();
+  }
+  setTimeout(function () {
+    const el = document.getElementById("meal-write-" + mealId);
+    if (!el) return;
+    el.focus();
+    focusIntoView(el);
+  }, 0);
+};
+Actions.mealWriteKey = function(ev, kind, mealId) {
+  if (!ev || ev.key !== "Enter") return;
+  if (ev.preventDefault) ev.preventDefault();
+  if (kind === "tile") Actions.addMealWrite(mealId);
+  else if (kind === "draft") Actions.addMealDraftDish();
+  else if (kind === "guest") Actions.mealLinkAddDish();
+  else if (kind === "name") Actions.mealLinkJoinGuest();
+};
+Actions.addMealWrite = async function(mealId) {
+  const m = mealById(mealId);
+  const el = document.getElementById("meal-write-" + mealId);
+  const title = String((el && el.value) || "").trim();
+  if (!m) return;
+  if (!title) { toast("Say what you are bringing"); return; }
+  const clash = m.dishes.filter(function (d) {
+    return String(d.title).trim().toLowerCase() === title.toLowerCase();
+  }).length;
+  if (clash && !confirm("Somebody is already bringing " + title +
+    ". Add it anyway? The tile will read \\"Lots of " + title + "\\".")) return;
+  try {
+    await API("meal/dish/write", { mealId: mealId, title: title });
+    state.mealDishPick[mealId] = null;
+    state.mealDishSearch[mealId] = "";
+    await refreshLibrary(false);
+    toast("On the table");
+  } catch (err) { toast(err.message); }
+  renderApp();
+};
 /* Taking a link recipe into the library so something can be done to it.
    Every one of the four buttons comes through here first, because the recipe
    is not in state.recipes yet and half the app resolves recipes by looking
@@ -9217,7 +9731,8 @@ Actions.saveMeal = async function() {
       const missed = [];
       for (const d of dr.dishes) {
         try {
-          await API("meal/dish/add", {
+          if (d.write) await API("meal/dish/write", { mealId: made.mealId, title: d.title });
+          else await API("meal/dish/add", {
             mealId: made.mealId, recipeId: d.recipeId, servings: d.servings
           });
         } catch (e) { missed.push(d.title); }
@@ -9558,6 +10073,16 @@ Actions.addMealDraftDish = function() {
   const dr = state.mealDraft;
   if (!dr || !dr.pick) return;
   readMealDraftFields();
+  if (dr.pick.write) {
+    const box = document.getElementById("meal-write-draft");
+    const title = String((box && box.value) || "").trim();
+    if (!title) { toast("Say what you are bringing"); return; }
+    dr.dishes.push({ write: true, title: title });
+    dr.pick = null;
+    dr.search = "";
+    renderModal();
+    return;
+  }
   const field = document.getElementById("meal-serv-draft");
   const servings = Number(field ? field.value : dr.pick.servings);
   if (!(servings > 0)) { toast("How many are you making?"); return; }
@@ -10587,7 +11112,10 @@ if (typeof document !== "undefined" && document.addEventListener) {
     /* A recipe link is readable without an account, so it opens rather than
        waiting behind the sign-in screen. A friend code still has to wait -
        there is no one to send the request from yet. */
-    if (scanned && scanned.type === "recipe") { await Actions.beginIntent(scanned); return; }
+    if (scanned && (scanned.type === "recipe" || scanned.type === "meal")) {
+      await Actions.beginIntent(scanned);
+      return;
+    }
     if (scanned && scanned.type !== "push") { stashIntent(scanned); state._arrivedByScan = true; }
     renderApp();
     return;
@@ -11197,7 +11725,21 @@ const LATER_TABLES = [
      Keyed by a hash of where the request came from, never the address
      itself, and gone after a few minutes or the first time it is taken. */
   "CREATE TABLE IF NOT EXISTS link_handoffs ( match_key TEXT NOT NULL, link TEXT NOT NULL, created_at TEXT NOT NULL )",
-  "CREATE INDEX IF NOT EXISTS idx_handoffs_key ON link_handoffs(match_key, created_at)"
+  "CREATE INDEX IF NOT EXISTS idx_handoffs_key ON link_handoffs(match_key, created_at)",
+  /* The one link a community meal can be handed out by. Kept apart from the
+     meal row so the table already live in production is never altered, and
+     made on first asking rather than at creation, so meals from before the
+     feature get one too. Not a secret worth the name - anyone holding it can
+     join as a guest - but long enough that nobody stumbles onto one. */
+  "CREATE TABLE IF NOT EXISTS meal_links ( token TEXT PRIMARY KEY, meal_id TEXT NOT NULL, " +
+    "created_by TEXT NOT NULL, created_at TEXT NOT NULL )",
+  "CREATE INDEX IF NOT EXISTS idx_mlinks_meal ON meal_links(meal_id)",
+  /* Somebody at the table with no cookbook: a name and nothing else. Their
+     dishes live in meal_dishes like everyone's, under a cookbook_id of
+     "guest:" plus this id, which no real cookbook can ever be. */
+  "CREATE TABLE IF NOT EXISTS meal_link_guests ( guest_id TEXT PRIMARY KEY, meal_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, name_lc TEXT NOT NULL, created_at TEXT NOT NULL )",
+  "CREATE INDEX IF NOT EXISTS idx_mlguests_meal ON meal_link_guests(meal_id, name_lc)"
 ];
 
 /* What a kitchen is assumed to have until it says otherwise. Seeded on read
@@ -11312,7 +11854,7 @@ async function addLaterColumns(env) {
    already in the database will match, the bootstrap will be skipped, and the
    new thing will never be created. Bump SCHEMA_VERSION in the same change
    and the next request applies it. */
-const SCHEMA_VERSION = "schema-v5";
+const SCHEMA_VERSION = "schema-v6";
 async function schemaStamped(env) {
   try {
     const row = await env.DB.prepare(
@@ -11374,7 +11916,7 @@ async function mealsFor(env, cookbookId, seats) {
   /* Three fan-outs over the same list of meals, so they travel together
      rather than as three trips to the same place. */
   const parts = chunked(ids);
-  const meta = [], guests = [], dishes = [];
+  const meta = [], guests = [], dishes = [], linkGuests = [];
   for (const part of parts) {
     const ph = placeholders(part.length);
     meta.push(env.DB.prepare(
@@ -11389,10 +11931,13 @@ async function mealsFor(env, cookbookId, seats) {
       "SELECT dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at " +
       "FROM meal_dishes WHERE meal_id IN (" + ph + ") ORDER BY created_at"
     ).bind(...part));
+    linkGuests.push(env.DB.prepare(
+      "SELECT guest_id, meal_id, name, created_at FROM meal_link_guests WHERE meal_id IN (" + ph + ")"
+    ).bind(...part));
   }
   /* A batch answers in the order it was asked, so the three groups are told
      apart by where they sit rather than by what they contain. */
-  const res = await env.DB.batch(meta.concat(guests, dishes));
+  const res = await env.DB.batch(meta.concat(guests, dishes, linkGuests));
   const rowsAt = (from, count) => {
     const out = [];
     for (let i = from; i < from + count; i++) {
@@ -11406,23 +11951,31 @@ async function mealsFor(env, cookbookId, seats) {
   /* Chunking split the ORDER BY, so the order is restored here. */
   const dishRows = rowsAt(2 * n, n)
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const linkGuestRows = rowsAt(3 * n, n);
 
   /* Guest cookbooks need names, and they are not necessarily friends of
      ours, so they are collected here rather than borrowed from the friend
      list the library already built. */
   const cookbooks = Array.from(new Set(
     metaRows.map(r => r.owner_cb).concat(guestRows.map(r => r.cookbook_id), dishRows.map(r => r.cookbook_id))
-  ));
-  return { meals: { metaRows, guestRows, dishRows, myStatus, myAt }, cookbooks };
+  )).filter(cb => !isLinkGuestCb(cb));
+  return { meals: { metaRows, guestRows, dishRows, linkGuestRows, myStatus, myAt }, cookbooks };
 }
 
 /* The rows above, shaped for the client once labels are known. */
 function shapeMeals(raw, labelFor, cookbookId) {
   if (!raw || !raw.metaRows) return [];
   const { metaRows, guestRows, dishRows, myStatus, myAt } = raw;
-  const byMeal = {}, dishesBy = {};
+  const linkGuestRows = raw.linkGuestRows || [];
+  const byMeal = {}, dishesBy = {}, linkBy = {}, guestName = {};
   for (const g of guestRows) (byMeal[g.meal_id] = byMeal[g.meal_id] || []).push(g);
   for (const d of dishRows) (dishesBy[d.meal_id] = dishesBy[d.meal_id] || []).push(d);
+  for (const g of linkGuestRows) {
+    (linkBy[g.meal_id] = linkBy[g.meal_id] || []).push(g);
+    guestName[LINK_GUEST_PREFIX + g.guest_id] = g.name;
+  }
+  /* A guest with no cookbook is named by what they typed, not by a household. */
+  const dishLabel = (cb) => isLinkGuestCb(cb) ? (guestName[cb] || "Guest") : labelFor(cb);
   return metaRows.map(m => ({
     mealId: m.meal_id,
     title: m.title,
@@ -11451,19 +12004,99 @@ function shapeMeals(raw, labelFor, cookbookId) {
         label: labelFor(g.cookbook_id), status: g.status,
         mine: g.cookbook_id === cookbookId, updatedAt: g.updated_at
       }))
+      .concat((linkBy[m.meal_id] || []).map(g => ({
+        label: g.name, status: "guest", mine: false, updatedAt: g.created_at, guestId: g.guest_id
+      })))
       .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" })),
     dishes: (dishesBy[m.meal_id] || []).map(d => ({
       dishId: d.dish_id,
-      label: labelFor(d.cookbook_id),
+      label: dishLabel(d.cookbook_id),
       by: d.created_by,
       title: d.title,
       /* A dish brought by somebody else is a title and nothing more: the
          recipe id would only invite a tap that cannot open anything. */
-      recipeId: d.cookbook_id === cookbookId ? d.recipe_id : null,
+      recipeId: (d.cookbook_id === cookbookId && d.recipe_id) ? d.recipe_id : null,
       entryId: d.cookbook_id === cookbookId ? d.entry_id : null,
       mine: d.cookbook_id === cookbookId
     }))
   })).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+}
+
+/* ---- the shareable meal link ------------------------------------------
+   Anyone holding a meal's link can read it and put their name on it, with or
+   without a cookbook. That is the whole of the security model and it is meant
+   to be: the link is an invitation to a dinner, not a key to anything else.
+   What crosses it is what the tile already shows - household names, guest
+   names and dish titles. No recipe, no servings, no cookbook. */
+const LINK_GUEST_PREFIX = "guest:";
+function isLinkGuestCb(cb) { return String(cb || "").indexOf(LINK_GUEST_PREFIX) === 0; }
+const newMealLinkToken = () => randomFrom(RECIPE_ALPHABET, 22);
+const newLinkGuestId = () => randomFrom(RECIPE_ALPHABET, 16);
+const MEAL_LINK_COLS = "meal_id, owner_cb, title, on_date, at_time, description, location";
+
+/* A wrong link counts against the address it came from, the same as a wrong
+   name lookup, so the tokens cannot be walked. */
+async function mealByLink(env, link, ip) {
+  const token = cleanString(link, 64);
+  const row = token
+    ? await env.DB.prepare("SELECT meal_id FROM meal_links WHERE token = ?").bind(token).first()
+    : null;
+  const meal = row
+    ? await env.DB.prepare("SELECT " + MEAL_LINK_COLS + " FROM community_meals WHERE meal_id = ?")
+        .bind(row.meal_id).first()
+    : null;
+  if (!meal) {
+    await throttleRecordFailure(env, ["ip:" + ip]);
+    throw new ApiError(404, "That meal is no longer there, or the link is not quite right.");
+  }
+  return meal;
+}
+
+/* The meal as somebody holding the link sees it. Only people who are actually
+   coming are listed: an unanswered invitation is between the host and that
+   cookbook. */
+async function publicMealView(env, meal) {
+  const res = await env.DB.batch([
+    env.DB.prepare(
+      "SELECT cookbook_id, status FROM meal_guests WHERE meal_id = ? AND status IN ('owner', 'accepted')"
+    ).bind(meal.meal_id),
+    env.DB.prepare(
+      "SELECT guest_id, name, created_at FROM meal_link_guests WHERE meal_id = ? ORDER BY created_at"
+    ).bind(meal.meal_id),
+    env.DB.prepare(
+      "SELECT dish_id, cookbook_id, title, created_at FROM meal_dishes WHERE meal_id = ? ORDER BY created_at"
+    ).bind(meal.meal_id)
+  ]);
+  const seats = (res[0] && res[0].results) || [];
+  const linkGuests = (res[1] && res[1].results) || [];
+  const dishes = (res[2] && res[2].results) || [];
+  const map = await membersOf(env, [meal.owner_cb].concat(
+    seats.map(r => r.cookbook_id), dishes.map(r => r.cookbook_id).filter(cb => !isLinkGuestCb(cb))
+  ));
+  const label = (cb) => householdLabel(map[cb] || []) || "Someone";
+  const guestName = {};
+  for (const g of linkGuests) guestName[LINK_GUEST_PREFIX + g.guest_id] = g.name;
+  const guests = seats.map(r => ({ label: label(r.cookbook_id), status: r.status === "owner" ? "owner" : "accepted" }))
+    .concat(linkGuests.map(g => ({ label: g.name, status: "guest", guestId: g.guest_id })))
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  return {
+    mealId: meal.meal_id,
+    title: meal.title,
+    description: meal.description || "",
+    location: meal.location || "",
+    date: meal.on_date,
+    time: meal.at_time,
+    ownerLabel: label(meal.owner_cb),
+    guests,
+    dishes: dishes.map(d => {
+      const g = isLinkGuestCb(d.cookbook_id);
+      return {
+        dishId: d.dish_id, title: d.title,
+        label: g ? (guestName[d.cookbook_id] || "Guest") : label(d.cookbook_id),
+        guestId: g ? d.cookbook_id.slice(LINK_GUEST_PREFIX.length) : null
+      };
+    })
+  };
 }
 
 /* Guest rows for one meal, and whether this cookbook may act on it. */
@@ -11914,7 +12547,7 @@ function pushLater(ctx, work) {
 }
 
 const HANDOFF_TTL_MS = 3 * 60 * 1000;
-const HANDOFF_LINK_RE = /^\?(r|f)=[A-Za-z0-9%._~-]{1,160}$/;
+const HANDOFF_LINK_RE = /^\?(r|f|m)=[A-Za-z0-9%._~-]{1,160}$/;
 async function handoffKey(request) {
   let ip = request.headers.get("CF-Connecting-IP") || "unknown";
   if (ip.indexOf(":") >= 0) ip = ip.split(":").slice(0, 4).join(":");
@@ -12223,6 +12856,93 @@ async function handleApi(route, body, env, request, ctx) {
       visibility: row.visibility,
       data
     });
+  }
+
+  /* ---- a community meal, by its link ----
+     Four doors that need no account: read the meal, put a name on it, and
+     add or take back a dish under a name. The link is the only credential,
+     so each of these finds the meal by it afresh. */
+  if (route === "meal/public") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const meal = await mealByLink(env, body.link, ip);
+    return jsonResponse({ meal: await publicMealView(env, meal) });
+  }
+
+  /* A name that is already on the guest list is that guest again, rather
+     than a second Ann - which is also how somebody on a new phone gets back
+     to the dishes they put down on the old one. */
+  if (route === "meal/guest/join") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const meal = await mealByLink(env, body.link, ip);
+    const name = cleanString(body.name, 40);
+    if (!name) throw new ApiError(400, "Type your name first.");
+    const nameLc = name.toLowerCase();
+    const known = await env.DB.prepare(
+      "SELECT guest_id, name FROM meal_link_guests WHERE meal_id = ? AND name_lc = ?"
+    ).bind(meal.meal_id, nameLc).first();
+    if (known) {
+      return jsonResponse({ guestId: known.guest_id, name: known.name, meal: await publicMealView(env, meal) });
+    }
+    const have = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM meal_link_guests WHERE meal_id = ?"
+    ).bind(meal.meal_id).first();
+    if (have && have.n >= MAX_MEAL_GUESTS) {
+      throw new ApiError(409, "That is more guests than one meal will hold.");
+    }
+    const guestId = newLinkGuestId();
+    await env.DB.prepare(
+      "INSERT INTO meal_link_guests (guest_id, meal_id, name, name_lc, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(guestId, meal.meal_id, name, nameLc, new Date().toISOString()).run();
+    pushLater(ctx, function () {
+      return pushToCookbooks(env, [meal.owner_cb], null, {
+        title: name + " is coming",
+        body: "They joined " + (meal.title || "your meal") + " as a guest.",
+        url: "/?n=meal:" + meal.meal_id, tag: "meal:" + meal.meal_id, kind: "mealYes"
+      });
+    });
+    return jsonResponse({ guestId, name, meal: await publicMealView(env, meal) });
+  }
+
+  if (route === "meal/guest/dish/add") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const meal = await mealByLink(env, body.link, ip);
+    const guest = await env.DB.prepare(
+      "SELECT guest_id, name FROM meal_link_guests WHERE guest_id = ? AND meal_id = ?"
+    ).bind(cleanString(body.guestId, 64), meal.meal_id).first();
+    if (!guest) throw new ApiError(404, "Join the meal as a guest first.");
+    const title = cleanString(body.title, 120);
+    if (!title) throw new ApiError(400, "Say what you are bringing.");
+    const have = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM meal_dishes WHERE meal_id = ?"
+    ).bind(meal.meal_id).first();
+    if (have && have.n >= MAX_MEAL_DISHES) {
+      throw new ApiError(409, "That is as many dishes as one meal will hold.");
+    }
+    const dishId = newDishId();
+    await env.DB.prepare(
+      "INSERT INTO meal_dishes (dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at) " +
+      "VALUES (?, ?, ?, '', ?, NULL, ?, ?)"
+    ).bind(dishId, meal.meal_id, LINK_GUEST_PREFIX + guest.guest_id, title, guest.name,
+      new Date().toISOString()).run();
+    return jsonResponse({ dishId, meal: await publicMealView(env, meal) });
+  }
+
+  /* Any guest's dish can be taken back by anyone holding the link - that is
+     the bargain of not having an account. A cookbook's dish cannot. */
+  if (route === "meal/guest/dish/remove") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const meal = await mealByLink(env, body.link, ip);
+    const dishId = cleanString(body.dishId, 64);
+    const dish = await env.DB.prepare(
+      "SELECT cookbook_id FROM meal_dishes WHERE dish_id = ? AND meal_id = ?"
+    ).bind(dishId, meal.meal_id).first();
+    if (dish) {
+      if (!isLinkGuestCb(dish.cookbook_id)) {
+        throw new ApiError(403, "Only the person bringing that can take it off.");
+      }
+      await env.DB.prepare("DELETE FROM meal_dishes WHERE dish_id = ?").bind(dishId).run();
+    }
+    return jsonResponse({ dishId, removed: true, meal: await publicMealView(env, meal) });
   }
 
   const me = await requireAuth(env, body);
@@ -12866,6 +13586,8 @@ async function handleApi(route, body, env, request, ctx) {
     }
     await env.DB.prepare("DELETE FROM meal_dishes WHERE meal_id = ?").bind(mealId).run();
     await env.DB.prepare("DELETE FROM meal_guests WHERE meal_id = ?").bind(mealId).run();
+    await env.DB.prepare("DELETE FROM meal_link_guests WHERE meal_id = ?").bind(mealId).run();
+    await env.DB.prepare("DELETE FROM meal_links WHERE meal_id = ?").bind(mealId).run();
     await env.DB.prepare("DELETE FROM community_meals WHERE meal_id = ?").bind(mealId).run();
     return jsonResponse({ mealId, cancelled: true });
   }
@@ -12905,6 +13627,105 @@ async function handleApi(route, body, env, request, ctx) {
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(dishId, mealId, me.cookbookId, recipeId, title, entryId, me.username, now).run();
     return jsonResponse({ dishId, mealId, entryId, title, servings });
+  }
+
+  /* A dish with no recipe behind it - a bag of ice, Grandma's pie. It goes on
+     the tile and nowhere else: there is nothing to cook from, so nothing to
+     put on the calendar or the shopping list. */
+  if (route === "meal/dish/write") {
+    const mealId = cleanString(body.mealId, 64);
+    const title = cleanString(body.title, 120);
+    const seat = await mealSeat(env, mealId, me.cookbookId);
+    if (seat.status === "invited") throw new ApiError(409, "Accept the invitation first.");
+    if (!title) throw new ApiError(400, "Say what you are bringing.");
+    const have = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM meal_dishes WHERE meal_id = ?"
+    ).bind(mealId).first();
+    if (have && have.n >= MAX_MEAL_DISHES) {
+      throw new ApiError(409, "That is as many dishes as one meal will hold.");
+    }
+    const dishId = newDishId();
+    await env.DB.prepare(
+      "INSERT INTO meal_dishes (dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at) " +
+      "VALUES (?, ?, ?, '', ?, NULL, ?, ?)"
+    ).bind(dishId, mealId, me.cookbookId, title, me.username, new Date().toISOString()).run();
+    return jsonResponse({ dishId, mealId, title });
+  }
+
+  /* The meal's link, made the first time anybody at the table asks for it.
+     Anyone who is coming may hand it on; somebody who has not answered yet
+     is not at the table to hand anything out. */
+  if (route === "meal/link") {
+    const mealId = cleanString(body.mealId, 64);
+    const seat = await mealSeat(env, mealId, me.cookbookId);
+    if (seat.status !== "owner" && seat.status !== "accepted") {
+      throw new ApiError(409, "Accept the invitation first.");
+    }
+    const row = await env.DB.prepare(
+      "SELECT token FROM meal_links WHERE meal_id = ? LIMIT 1"
+    ).bind(mealId).first();
+    if (row) return jsonResponse({ mealId, link: row.token });
+    const token = newMealLinkToken();
+    await env.DB.prepare(
+      "INSERT INTO meal_links (token, meal_id, created_by, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(token, mealId, me.username, new Date().toISOString()).run();
+    return jsonResponse({ mealId, link: token });
+  }
+
+  /* Coming to a meal by its link with a cookbook in hand. The link stands in
+     for the invitation, so there is no friendship to check and none is made:
+     a seat at somebody's table is not a link between cookbooks. */
+  if (route === "meal/join") {
+    await throttleGuard(env, ["ip:" + ip]);
+    const meal = await mealByLink(env, body.link, ip);
+    const seat = await env.DB.prepare(
+      "SELECT status FROM meal_guests WHERE meal_id = ? AND cookbook_id = ?"
+    ).bind(meal.meal_id, me.cookbookId).first();
+    if (seat && (seat.status === "owner" || seat.status === "accepted")) {
+      return jsonResponse({ mealId: meal.meal_id, status: seat.status, joined: false });
+    }
+    const now = new Date().toISOString();
+    if (seat) {
+      await env.DB.prepare(
+        "UPDATE meal_guests SET status = 'accepted', responded_by = ?, updated_at = ? " +
+        "WHERE meal_id = ? AND cookbook_id = ?"
+      ).bind(me.username, now, meal.meal_id, me.cookbookId).run();
+    } else {
+      const have = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM meal_guests WHERE meal_id = ?"
+      ).bind(meal.meal_id).first();
+      if ((have ? have.n : 0) >= MAX_MEAL_GUESTS + 1) {
+        throw new ApiError(409, "That is more guests than one meal will hold.");
+      }
+      await env.DB.prepare(
+        "INSERT INTO meal_guests (meal_id, cookbook_id, status, invited_by, responded_by, updated_at) " +
+        "VALUES (?, ?, 'accepted', 'link', ?, ?)"
+      ).bind(meal.meal_id, me.cookbookId, me.username, now).run();
+    }
+    pushLater(ctx, function () {
+      return pushToCookbooks(env, [meal.owner_cb], null, {
+        title: me.username + " is coming",
+        body: "They joined " + (meal.title || "your meal") + " through its link.",
+        url: "/?n=meal:" + meal.meal_id, tag: "meal:" + meal.meal_id, kind: "mealYes"
+      });
+    });
+    return jsonResponse({ mealId: meal.meal_id, status: "accepted", joined: true });
+  }
+
+  /* The host taking a link guest off the list, with everything they said
+     they would bring. */
+  if (route === "meal/guest/remove") {
+    const mealId = cleanString(body.mealId, 64);
+    const guestId = cleanString(body.guestId, 64);
+    const seat = await mealSeat(env, mealId, me.cookbookId);
+    if (!seat.isOwner) throw new ApiError(403, "Only the cookbook hosting it can remove a guest.");
+    await env.DB.prepare(
+      "DELETE FROM meal_dishes WHERE meal_id = ? AND cookbook_id = ?"
+    ).bind(mealId, LINK_GUEST_PREFIX + guestId).run();
+    await env.DB.prepare(
+      "DELETE FROM meal_link_guests WHERE meal_id = ? AND guest_id = ?"
+    ).bind(mealId, guestId).run();
+    return jsonResponse({ mealId, guestId, removed: true });
   }
 
   /* Taking a dish back off, from either end: the tile or the calendar. Both

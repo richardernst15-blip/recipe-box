@@ -1035,7 +1035,16 @@ body.tabs-down .tabbar{ transform:translateY(calc(100% + 1px)); }
 .meal-dish-pick.meal-write input{ grid-column:1; grid-row:1; width:100%; min-width:0;
   text-align:left; padding-left:10px; padding-right:10px; }
 .meal-dish-pick.meal-write .btn, .meal-dish-pick.meal-write .icon-btn{ grid-row:1; }
-.meal-write-btn{ margin-top:6px; }
+/* Beside the search field, the same height as it, never wrapping its label. */
+.meal-write-btn{ flex-shrink:0; align-self:stretch; white-space:nowrap; }
+/* The sign-up box and whatever sits under it - Share Meal, Invite more,
+   Edit, Leave - were touching. The box owns the gap, so it is the same
+   whether the search is empty, a recipe is picked or a dish is being typed. */
+.meal-picker{ margin-bottom:16px; }
+.meal-picker .search-wrap{ margin-bottom:0; }
+.meal-results > :first-child{ margin-top:8px; }
+.meal-results .search-banner{ font-size:10.5px; padding:4px 8px; border-radius:6px; margin:10px 0 4px; }
+.meal-results > .search-banner:first-child{ margin-top:8px; }
 .meal-link-doors{ display:flex; flex-direction:column; gap:8px; }
 .meal-link-doors .btn{ justify-content:center; }
 .meal-guest-pick{ cursor:pointer; font:inherit; font-size:12.5px; }
@@ -4118,9 +4127,13 @@ function searchGroupOf(r, q) {
 function searchGroups() {
   const q = state.search.trim().toLowerCase();
   if (!q) return [];
+  return searchGroupsIn(ownerFiltered().filter(matchesTags), q);
+}
+/* The tiering itself, over any list. The Recipes tab hands it the shelf as
+   filtered; a community meal hands it everything visible. */
+function searchGroupsIn(list, q) {
   const by = {};
-  ownerFiltered().forEach(function (r) {
-    if (!matchesTags(r)) return;
+  list.forEach(function (r) {
     const g = searchGroupOf(r, q);
     if (g) (by[g] = by[g] || []).push(r);
   });
@@ -4743,7 +4756,6 @@ function MealDishResultsHTML(m) {
       "Actions.addMealWrite(\\'" + m.mealId + "\\')",
       "Actions.clearMealDishPick(\\'" + m.mealId + "\\')");
   }
-  const write = MealWriteButtonHTML("Actions.startMealWrite(\\'" + m.mealId + "\\')");
   if (picked) {
     const counts = dishTitleCounts(m);
     const clash = counts[String(picked.title).trim().toLowerCase()] > 0;
@@ -4755,26 +4767,8 @@ function MealDishResultsHTML(m) {
         "Actions.addMealDish(\\'" + m.mealId + "\\')",
         "Actions.clearMealDishPick(\\'" + m.mealId + "\\')");
   }
-  if (!q.trim()) return write;
-  const all = mealDishMatches(q);
-  if (all.length === 0) return write + '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
-  return write + '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
-      /* The plus is the part of the row that looks like the button, so it is
-         wired to the same thing the rest of the row does rather than being a
-         decoration you can tap all day without effect. */
-      return '<li class="groc-entry">' +
-        '<button class="groc-entry-main" onclick="Actions.pickMealDish(\\'' + m.mealId +
-          '\\',\\'' + r.recipeId + '\\')">' +
-          '<div class="groc-entry-label">' + esc(r.title) + '</div>' +
-          '<div class="groc-entry-sub">' + esc(r.household) + '</div>' +
-        '</button>' +
-        '<button class="groc-entry-plus" aria-label="Bring ' + esc(r.title) + '" ' +
-          'onclick="Actions.pickMealDish(\\'' + m.mealId + '\\',\\'' + r.recipeId + '\\')">' +
-          icon("plus", 16) + '</button>' +
-      '</li>';
-    }).join("") + '</ul>' +
-    (all.length > MEAL_RESULT_MAX
-      ? '<p class="no-rating">' + (all.length - MEAL_RESULT_MAX) + ' more — keep typing.</p>' : "");
+  if (!q.trim()) return "";
+  return MealSearchListHTML(m.mealId, q);
 }
 
 /* The sign-up box. Picking a recipe does not commit you to it - it opens a
@@ -4783,7 +4777,8 @@ function MealDishResultsHTML(m) {
    wrong quantity of everything in the basket. */
 function MealDishPickerHTML(m) {
   const q = String(state.mealDishSearch[m.mealId] || "");
-  return '<div class="meal-sec">What you are bringing</div>' +
+  return '<div class="meal-picker">' +
+    '<div class="meal-sec">What you are bringing</div>' +
     '<div class="search-wrap">' +
       '<div class="search-field"><span class="icon">' + icon("search", 18) + '</span>' +
         '<input id="meal-search-' + m.mealId + '" type="text" ' +
@@ -4791,20 +4786,54 @@ function MealDishPickerHTML(m) {
           'onfocus="Actions.focusMealSearch(\\'meal-search-' + m.mealId + '\\')" ' +
           'oninput="Actions.onMealDishInput(\\'' + m.mealId + '\\', this.value)" />' +
       '</div>' +
+      MealWriteButtonHTML("Actions.startMealWrite(\\'" + m.mealId + "\\')") +
     '</div>' +
-    '<div id="meal-results-' + m.mealId + '">' + MealDishResultsHTML(m) + '</div>';
+    '<div class="meal-results" id="meal-results-' + m.mealId + '">' + MealDishResultsHTML(m) + '</div>' +
+  '</div>';
 }
 
-/* Same box the calendar's own day sheet searches: everything visible, never
-   what the Recipes tab happens to be filtered to. */
-function mealDishMatches(q) {
+/* Everything visible, never what the Recipes tab happens to be filtered to,
+   but tiered the way the Recipes search is: name, then ingredient, then tag,
+   then anything else, each recipe once. */
+function mealDishGroups(q) {
   const needle = String(q).trim().toLowerCase();
   if (!needle) return [];
-  return state.recipes.filter(function (r) {
-    const hay = [r.title, r.description, r.owner, r.household, r.ingNames]
-      .concat(r.tags || []).join(" ").toLowerCase();
-    return hay.indexOf(needle) >= 0;
+  return searchGroupsIn(state.recipes, needle);
+}
+function mealDishMatches(q) {
+  return mealDishGroups(q).reduce(function (all, g) { return all.concat(g.items); }, []);
+}
+/* The results under a meal search box, banner per tier, the first
+   MEAL_RESULT_MAX of the whole tiered list. key is the meal id, or "draft"
+   for the sheet where a meal is still being written. */
+function MealSearchListHTML(key, q) {
+  const groups = mealDishGroups(q);
+  const total = groups.reduce(function (n, g) { return n + g.items.length; }, 0);
+  if (!total) return '<p class="no-rating">Nothing matches "' + esc(String(q).trim()) + '".</p>';
+  let left = MEAL_RESULT_MAX, html = "";
+  groups.forEach(function (g) {
+    if (left <= 0) return;
+    const take = g.items.slice(0, left);
+    left -= take.length;
+    html += '<div class="search-banner">' + esc(g.label) + '</div>' +
+      '<ul class="groc-list">' + take.map(function (r) {
+        /* The plus is the part of the row that looks like the button, so it
+           is wired to the same thing the rest of the row does rather than
+           being a decoration you can tap all day without effect. */
+        return '<li class="groc-entry">' +
+          '<button class="groc-entry-main" onclick="Actions.pickMealDish(\\'' + key +
+            '\\',\\'' + r.recipeId + '\\')">' +
+            '<div class="groc-entry-label">' + esc(r.title) + '</div>' +
+            '<div class="groc-entry-sub">' + esc(r.household) + '</div>' +
+          '</button>' +
+          '<button class="groc-entry-plus" aria-label="Bring ' + esc(r.title) + '" ' +
+            'onclick="Actions.pickMealDish(\\'' + key + '\\',\\'' + r.recipeId + '\\')">' +
+            icon("plus", 16) + '</button>' +
+        '</li>';
+      }).join("") + '</ul>';
   });
+  return html + (total > MEAL_RESULT_MAX
+    ? '<p class="no-rating">' + (total - MEAL_RESULT_MAX) + ' more — keep typing.</p>' : "");
 }
 
 function MealTileHTML(m) {
@@ -6294,7 +6323,7 @@ function MealDraftDishesHTML() {
         '</li>';
       }).join("") + '</ul>'
     : "";
-  return '<div class="step-block"><div class="step-label">What you are bringing</div>' +
+  return '<div class="step-block meal-picker"><div class="step-label">What you are bringing</div>' +
     chosen +
     '<div class="search-wrap">' +
       '<div class="search-field"><span class="icon">' + icon("search", 18) + '</span>' +
@@ -6303,8 +6332,9 @@ function MealDraftDishesHTML() {
           'onfocus="Actions.focusMealSearch(\\'meal-draft-search\\')" ' +
           'oninput="Actions.onMealDishInput(\\'draft\\', this.value)" />' +
       '</div>' +
+      MealWriteButtonHTML("Actions.startMealWrite(\\'draft\\')") +
     '</div>' +
-    '<div id="meal-results-draft">' + MealDraftResultsHTML() + '</div>' +
+    '<div class="meal-results" id="meal-results-draft">' + MealDraftResultsHTML() + '</div>' +
   '</div>';
 }
 
@@ -6316,7 +6346,6 @@ function MealDraftResultsHTML() {
     return MealWriteRowHTML("meal-write-draft", pick.title, "draft", "draft",
       "Actions.addMealDraftDish()", "Actions.clearMealDishPick(\\'draft\\')");
   }
-  const write = MealWriteButtonHTML("Actions.startMealWrite(\\'draft\\')");
   if (pick) {
     const clash = dr.dishes.filter(function (d) {
       return d.title.trim().toLowerCase() === pick.title.trim().toLowerCase();
@@ -6327,23 +6356,8 @@ function MealDraftResultsHTML() {
         "Actions.addMealDraftDish()", "Actions.clearMealDishPick(\\'draft\\')");
   }
   const q = String(dr.search || "");
-  if (!q.trim()) return write;
-  const all = mealDishMatches(q);
-  if (all.length === 0) return write + '<p class="no-rating">Nothing matches "' + esc(q.trim()) + '".</p>';
-  return write + '<ul class="groc-list">' + all.slice(0, MEAL_RESULT_MAX).map(function (r) {
-      return '<li class="groc-entry">' +
-        '<button class="groc-entry-main" onclick="Actions.pickMealDish(\\'draft\\',\\'' +
-          r.recipeId + '\\')">' +
-          '<div class="groc-entry-label">' + esc(r.title) + '</div>' +
-          '<div class="groc-entry-sub">' + esc(r.household) + '</div>' +
-        '</button>' +
-        '<button class="groc-entry-plus" aria-label="Bring ' + esc(r.title) + '" ' +
-          'onclick="Actions.pickMealDish(\\'draft\\',\\'' + r.recipeId + '\\')">' +
-          icon("plus", 16) + '</button>' +
-      '</li>';
-    }).join("") + '</ul>' +
-    (all.length > MEAL_RESULT_MAX
-      ? '<p class="no-rating">' + (all.length - MEAL_RESULT_MAX) + ' more — keep typing.</p>' : "");
+  if (!q.trim()) return "";
+  return MealSearchListHTML("draft", q);
 }
 
 /* The guest list, for both sheets that ask for one. A cookbook of friends
@@ -7027,11 +7041,13 @@ function MealLinkViewHTML() {
     ask = state.linkMealStep === "pick" ? MealLinkPickHTML(m) : MealLinkDoorHTML(m);
   }
   const bring = g
-    ? '<div class="meal-sec">What you are bringing</div>' +
-      MealWriteRowHTML("ml-write", "", "guest", "", "Actions.mealLinkAddDish()", null)
+    ? '<div class="meal-picker">' +
+        '<div class="meal-sec">What you are bringing</div>' +
+        MealWriteRowHTML("ml-write", "", "guest", "", "Actions.mealLinkAddDish()", null) +
+      '</div>'
     : "";
   const actions = g
-    ? '<div class="meal-actions" style="margin-top:12px">' +
+    ? '<div class="meal-actions">' +
         '<button class="btn btn-sm" onclick="Actions.mealLinkShare()">' + icon("shareIos", 14) + ' Share Meal</button>' +
         '<button class="btn btn-sm btn-ghost" onclick="Actions.mealLinkSwitch()">Not ' + esc(g.name) + '?</button>' +
       '</div>'

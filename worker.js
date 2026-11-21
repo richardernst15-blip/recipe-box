@@ -1053,6 +1053,12 @@ body.tabs-down .tabbar{ transform:translateY(calc(100% + 1px)); }
 .search-banner{ font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
   color:#fff; background:var(--sage-dark); border-radius:8px; padding:6px 10px; margin:16px 0 8px; }
 .search-banner:first-child{ margin-top:4px; }
+.search-banner{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.search-banner-n{ font-weight:400; opacity:.85; }
+/* Small, square, and at the far right of the bar. */
+.search-fold{ flex-shrink:0; width:24px; height:24px; padding:0; border:1px solid rgba(255,255,255,.6);
+  border-radius:6px; background:transparent; color:#fff; font:inherit; font-size:16px; font-weight:700;
+  line-height:1; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
 .meal-dup{ background:#fdf6e6; border:1px solid #e8d5a0; border-radius:9px; padding:8px 10px;
   font-size:12.5px; color:var(--ink); margin-top:6px; }
 .sched-banner{ display:flex; align-items:center; gap:10px; flex-wrap:wrap;
@@ -4218,20 +4224,42 @@ function ResultsSectionHTML() {
             icon("users", 15) + ' Show everyone\\'s recipes</button></div>'
           : "") + '</div>';
   } else {
-    const shown = Math.min(state.shown, results.length);
-    const rest = results.length - shown;
+    let shown = Math.min(state.shown, results.length);
+    let rest = results.length - shown;
+    let outOf = results.length;
     const groups = searchGroups();
     if (groups.length) {
+      /* Folded tiers are remembered for this search only: a new search starts
+         with everything open, so nothing goes missing behind a fold the
+         person has forgotten about. */
+      const qk = state.search.trim().toLowerCase();
+      if (state._foldQ !== qk) { state._foldQ = qk; state.searchFolded = {}; }
+      const folded = state.searchFolded || {};
+      /* A folded tier costs nothing from the page of cards, so the count and
+         the Load more button are about what is open. */
+      outOf = groups.reduce(function (n, g) { return n + (folded[g.key] ? 0 : g.items.length); }, 0);
+      shown = Math.min(state.shown, outOf);
+      rest = outOf - shown;
       /* The page of cards is cut from the whole tiered list, so a banner only
-         appears once at least one of its recipes is on the page. */
-      let left = shown;
+         appears once the page has reached it. */
+      let left = shown, cut = false;
       body = "";
       groups.forEach(function (g) {
-        if (left <= 0) return;
-        const take = g.items.slice(0, left);
+        /* Once an open tier has been cut short, later tiers wait for Load
+           more - folded ones included, so the order never jumps about. */
+        if (cut) return;
+        const shut = !!folded[g.key];
+        const take = shut ? [] : g.items.slice(0, Math.max(left, 0));
         left -= take.length;
-        body += '<div class="search-banner">' + esc(g.label) + '</div>' +
-          '<div class="grid-recipes">' + take.map(RecipeCardHTML).join("") + '</div>';
+        if (!shut && take.length < g.items.length) cut = true;
+        if (!shut && !take.length) return;
+        body += '<div class="search-banner">' +
+            '<span>' + esc(g.label) + (shut ? ' <span class="search-banner-n">(' + g.items.length + ')</span>' : "") + '</span>' +
+            '<button class="search-fold" aria-expanded="' + (shut ? "false" : "true") + '" ' +
+              'title="' + (shut ? "Show these" : "Hide these") + '" ' +
+              'onclick="Actions.toggleSearchGroup(\\'' + g.key + '\\')">' + (shut ? "+" : "\u2212") + '</button>' +
+          '</div>' +
+          (take.length ? '<div class="grid-recipes">' + take.map(RecipeCardHTML).join("") + '</div>' : "");
       });
     } else {
       body = '<div class="grid-recipes">' +
@@ -4241,7 +4269,7 @@ function ResultsSectionHTML() {
       body += '<div class="load-more">' +
         '<button class="btn" onclick="Actions.showMore()">Load ' +
           Math.min(rest, PAGE_SIZE) + ' more</button>' +
-        '<p class="load-more-count">Showing ' + shown + ' of ' + results.length + '</p>' +
+        '<p class="load-more-count">Showing ' + shown + ' of ' + outOf + '</p>' +
       '</div>';
     }
   }
@@ -7800,6 +7828,12 @@ Actions.onSearchInput = function(v) {
   updateSearchClear();
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(function () { searchTimer = null; updateResultsSection(); }, SEARCH_DELAY_MS);
+};
+/* Folding a search tier away, or opening it again. */
+Actions.toggleSearchGroup = function(key) {
+  state.searchFolded = state.searchFolded || {};
+  state.searchFolded[key] = !state.searchFolded[key];
+  updateResultsSection();
 };
 Actions.showMore = function() {
   state.shown = (state.shown || PAGE_SIZE) + PAGE_SIZE;

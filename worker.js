@@ -979,6 +979,12 @@ body.tabs-down .tabbar{ transform:translateY(calc(100% + 1px)); }
   padding:2px 8px; color:var(--ink); }
 .meal-tile .meal-dish-who .icon-btn{ padding:0 0 0 2px; }
 .meal-dish-who .icon-btn{ flex-shrink:0; }
+/* A dish name that opens its recipe reads as the name, not as a button. */
+.meal-dish-open{ border:0; background:none; padding:0; font:inherit; color:inherit; text-align:left;
+  cursor:pointer; text-decoration:underline; text-decoration-color:var(--border); text-underline-offset:3px; }
+.meal-pin{ flex-shrink:0; padding:2px; color:var(--ink-muted); }
+.meal-pin.on{ color:var(--meal); }
+.meal-pin.on svg{ fill:currentColor; }
 .meal-dish .lots{ color:var(--gold); font-size:11.5px; flex-shrink:0; }
 .meal-none{ font-size:13px; color:var(--ink-muted); margin:0 0 12px; }
 .meal-actions{ display:flex; flex-wrap:wrap; gap:8px; }
@@ -3933,6 +3939,7 @@ const TABS = [
 function activeTab() {
   if (state.view === "recipeTabs") return "recipeTabs";
   if (state.view === "detail" && state.detailFrom === "recipeTabs") return "recipeTabs";
+  if (state.view === "detail" && state.detailFrom === "calendar") return "calendar";
   if (state.view === "calendar") return "calendar";
   if (state.view === "groceries" || state.view === "grocery") return "groceries";
   return "recipes";
@@ -4735,11 +4742,24 @@ function MealDishesHTML(m) {
   const counts = dishTitleCounts(m);
   return '<ul class="meal-dishes">' + m.dishes.map(function (d) {
     const dup = counts[String(d.title).trim().toLowerCase()] > 1;
-    return '<li class="meal-dish">' +
-      '<span class="what">' + esc(dishDisplayTitle(m, d, counts)) + '</span>' +
+    const name = esc(dishDisplayTitle(m, d, counts));
+    /* A dish with a recipe behind it opens it; somebody else's can be pinned
+       into your own cookbook from here. */
+    const what = d.recipeId
+      ? '<button class="what meal-dish-open" onclick="Actions.openMealRecipe(\\'' + d.recipeId + '\\',\\'' + m.mealId + '\\')">' +
+          name + '</button>'
+      : '<span class="what">' + name + '</span>';
+    const pinned = !!(d.pinnable && isMarked("pin", d.recipeId));
+    const pin = d.pinnable
+      ? '<button class="icon-btn meal-pin' + (pinned ? " on" : "") + '" aria-pressed="' + (pinned ? "true" : "false") + '" ' +
+          'title="' + (pinned ? "Pinned to your cookbook - tap to unpin" : "Pin to your cookbook") + '" ' +
+          'onclick="Actions.toggleMealPin(\\'' + d.recipeId + '\\')">' + icon("pin", 14) + '</button>'
+      : "";
+    return '<li class="meal-dish">' + what +
       (dup ? '<span class="lots">×' + counts[String(d.title).trim().toLowerCase()] + '</span>' : "") +
       /* Cook and remove in one box, so the x cannot end up on a line of its
          own underneath the name it belongs to. */
+      pin +
       '<span class="meal-dish-who">' + esc(d.label) +
         (d.mine ? '<button class="icon-btn" title="Take this off" onclick="Actions.removeMealDish(\\'' +
           m.mealId + '\\',\\'' + d.dishId + '\\')">' + icon("x", 13) + '</button>' : "") +
@@ -5517,7 +5537,7 @@ function DetailViewHTML(r) {
     '<div class="wrap">' +
       '<div class="detail-top">' +
         '<button class="back-link" onclick="Actions.backFromDetail()">' + icon("chevronLeft", 18) +
-          (state.detailFrom === "recipeTabs" ? ' Tabs' : ' Cupboard') + '</button>' +
+          (state.detailFrom === "recipeTabs" ? ' Tabs' : state.detailFrom === "calendar" ? ' Calendar' : ' Cupboard') + '</button>' +
         action +
       '</div>' +
       '<div id="change-banner">' + ChangeBannerHTML() + '</div>' +
@@ -6876,7 +6896,8 @@ function LinkMarkButtonsHTML(lr, mine) {
 function LinkRecipeViewHTML() {
   const signedIn = !!state.session;
   const back = signedIn
-    ? '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) + ' Cupboard</button>'
+    ? '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) +
+        (state.linkFrom === "calendar" ? ' Calendar' : ' Cupboard') + '</button>'
     : '<button class="back-link" onclick="Actions.leaveLinkView()">' + icon("chevronLeft", 18) + ' Account Login</button>';
   if (!state.linkRecipe) {
     return '<div class="wrap"><div class="detail-top">' + back + '</div>' +
@@ -7693,8 +7714,18 @@ Actions.backToLibrary = function() {
    it came off a tab, the cupboard otherwise. */
 Actions.backFromDetail = function() {
   if (state.detailFrom === "recipeTabs" && openTabIds().length) Actions.goTab("recipeTabs");
+  else if (state.detailFrom === "calendar") backToMealCalendar();
   else Actions.backToLibrary();
 };
+/* Back from a recipe opened off a community meal: the calendar, with the
+   tile it came from back in view. */
+function backToMealCalendar() {
+  state.view = "calendar";
+  state.scheduledFor = null;
+  setWatch(null);
+  renderApp();
+  if (state.mealFocus) scrollToMeal(state.mealFocus);
+}
 Actions.openFromTab = function(id) { Actions.openDetail(id, false, "recipeTabs"); };
 /* Optimistic: the button flips at once and flips back if the server says no. */
 Actions.toggleRecipeTab = async function(id) {
@@ -9066,6 +9097,8 @@ Actions.recoverFromError = function() {
 Actions.leaveLinkView = function() {
   state.linkRecipe = null;
   state.linkError = "";
+  if (state.session && state.linkFrom === "calendar") { state.linkFrom = null; backToMealCalendar(); return; }
+  state.linkFrom = null;
   state.view = state.session ? "library" : "welcome";
   renderApp();
 };
@@ -9237,6 +9270,33 @@ Actions.removeLinkGuest = async function(mealId, guestId) {
     await API("meal/guest/remove", { mealId: mealId, guestId: guestId });
     await refreshLibrary(false);
     toast("Removed " + g.label);
+  } catch (e) { toast(e.message); }
+  renderApp();
+};
+
+/* ---- a dish on somebody's table, opened or pinned --------------------- */
+/* Remembered so Back from the recipe lands on the tile it was opened from. */
+Actions.openMealRecipe = async function(recipeId, mealId) {
+  const m = mealId ? mealById(mealId) : null;
+  if (m) state.mealFocus = m.mealId;
+  if (summaryById(recipeId)) { Actions.openDetail(recipeId, false, "calendar"); return; }
+  /* Not on our shelf yet: the same read-only page a share link opens, with
+     its own pin and favorite buttons. */
+  state.linkFrom = "calendar";
+  await Actions.beginIntent({ type: "recipe", recipeId: recipeId });
+};
+/* A recipe already on the shelf is pinned and unpinned the ordinary way. One
+   that is not - a stranger's at the same table - is claimed the way a share
+   link claims it, which puts it on the shelf with the pin on. */
+Actions.toggleMealPin = async function(recipeId) {
+  if (isMarked("pin", recipeId) || summaryById(recipeId)) {
+    await Actions.toggleMark("pin", recipeId);
+    return;
+  }
+  try {
+    await API("recipe/claim", { recipeId: recipeId, mark: "pin" });
+    await refreshLibrary(false);
+    toast("Pinned to your cookbook");
   } catch (e) { toast(e.message); }
   renderApp();
 };
@@ -10993,7 +11053,8 @@ if (typeof document !== "undefined" && document.addEventListener) {
     detail:  { go: function () { Actions.backFromDetail(); },
                under: function () {
                  return state.detailFrom === "recipeTabs" && openTabIds().length
-                   ? RecipeTabsViewHTML() : LibraryViewHTML();
+                   ? RecipeTabsViewHTML()
+                   : state.detailFrom === "calendar" ? CalendarViewHTML() : LibraryViewHTML();
                } },
     friends: { go: function () { Actions.backToLibrary(); },   under: LibraryViewHTML },
     grocery: { go: function () { Actions.backToGroceries(); }, under: GroceriesViewHTML }
@@ -11977,9 +12038,13 @@ async function mealsFor(env, cookbookId, seats) {
     guests.push(env.DB.prepare(
       "SELECT meal_id, cookbook_id, status, updated_at FROM meal_guests WHERE meal_id IN (" + ph + ")"
     ).bind(...part));
+    /* The recipe's visibility rides along so the tile can tell a dish that
+       may be opened and pinned from one its cook keeps to themselves. */
     dishes.push(env.DB.prepare(
-      "SELECT dish_id, meal_id, cookbook_id, recipe_id, title, entry_id, created_by, created_at " +
-      "FROM meal_dishes WHERE meal_id IN (" + ph + ") ORDER BY created_at"
+      "SELECT d.dish_id, d.meal_id, d.cookbook_id, d.recipe_id, d.title, d.entry_id, d.created_by, " +
+      "d.created_at, r.visibility AS visibility FROM meal_dishes d " +
+      "LEFT JOIN recipes r ON r.recipe_id = d.recipe_id " +
+      "WHERE d.meal_id IN (" + ph + ") ORDER BY d.created_at"
     ).bind(...part));
     linkGuests.push(env.DB.prepare(
       "SELECT guest_id, meal_id, name, created_at FROM meal_link_guests WHERE meal_id IN (" + ph + ")"
@@ -12063,9 +12128,13 @@ function shapeMeals(raw, labelFor, cookbookId) {
       label: dishLabel(d.cookbook_id),
       by: d.created_by,
       title: d.title,
-      /* A dish brought by somebody else is a title and nothing more: the
-         recipe id would only invite a tap that cannot open anything. */
-      recipeId: (d.cookbook_id === cookbookId && d.recipe_id) ? d.recipe_id : null,
+      /* Somebody else's dish carries its recipe only when its cook has shared
+         it - the same test a share link passes - so the tap that opens it and
+         the pin that keeps it always have something to open. A private
+         recipe, a typed dish and a guest's dish stay titles. */
+      recipeId: (d.recipe_id && (d.cookbook_id === cookbookId || isShareable(d.visibility))) ? d.recipe_id : null,
+      pinnable: !!(d.recipe_id && d.cookbook_id !== cookbookId && !isLinkGuestCb(d.cookbook_id) &&
+        isShareable(d.visibility)),
       entryId: d.cookbook_id === cookbookId ? d.entry_id : null,
       mine: d.cookbook_id === cookbookId
     }))

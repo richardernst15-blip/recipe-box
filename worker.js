@@ -5744,7 +5744,7 @@ function EditViewHTML() {
       '<div class="field"><label>Description</label><textarea id="f-description" rows="2">' + esc(d.description) + '</textarea></div>' +
       TagPickerHTML(d) +
       '<div class="two-col">' +
-        '<div class="field"><label>Base servings</label><input type="number" min="1" id="f-servings-base" value="' + esc(d.servings.base) + '" /></div>' +
+        '<div class="field"><label>Base servings</label><input type="number" min="1" id="f-servings-base" onchange="Actions.syncServings()" value="' + esc(d.servings.base) + '" /></div>' +
         '<div class="field"><label>Unit</label><input type="text" id="f-servings-unit" value="' + esc(d.servings.unit) + '" placeholder="servings" /></div>' +
       '</div>' +
       '<div class="field"><label>Macros per serving</label>' +
@@ -5774,6 +5774,46 @@ function EditViewHTML() {
     '</div>';
 }
 
+/* Macros are kept per serving, but what the pot holds does not change when
+   the count does: make it serve 8 instead of 4 and each serving carries half
+   as much. So a new base servings rescales whatever macros are filled in,
+   holding the total. Calories round to whole numbers and grams to one
+   decimal; a blank stays blank and the source label is left alone. */
+const MACRO_ROUNDING = [["calories", 1], ["proteinG", 10], ["fatG", 10], ["carbsG", 10]];
+function rescaleMacros(m, fromBase, toBase) {
+  const from = Number(fromBase), to = Number(toBase);
+  const out = Object.assign({}, m);
+  if (!(from > 0) || !(to > 0) || from === to) return out;
+  MACRO_ROUNDING.forEach(function (p) {
+    const v = out[p[0]];
+    if (v === "" || v == null || isNaN(Number(v))) return;
+    out[p[0]] = Math.round(Number(v) * from / to * p[1]) / p[1];
+  });
+  return out;
+}
+/* Rounding at every step would drift: 301 kcal over 4 goes to 151 over 8 and
+   then 302 back over 4. So the numbers the rescaling started from are kept,
+   and each new count works from those, for as long as the boxes still show
+   what the last rescale put there. Typing over a macro makes that the new
+   starting point. The new values are written into the boxes directly so the
+   caret is not pulled out of whatever field is being typed in next. */
+function macrosMatch(a, b) {
+  return MACRO_ROUNDING.every(function (p) { return String(a[p[0]]) === String(b[p[0]]); });
+}
+function rescaleDraftMacros(d, fromBase) {
+  const a = state.macroAnchor;
+  const keep = a && a.draft === d && Number(a.lastBase) === Number(fromBase) && macrosMatch(a.last, d.macrosPerServing);
+  const anchor = keep ? a : { draft: d, base: fromBase, macros: Object.assign({}, d.macrosPerServing) };
+  const next = rescaleMacros(anchor.macros, anchor.base, d.servings.base);
+  MACRO_ROUNDING.forEach(function (p) { d.macrosPerServing[p[0]] = next[p[0]]; });
+  state.macroAnchor = { draft: d, base: anchor.base, macros: anchor.macros,
+    last: Object.assign({}, d.macrosPerServing), lastBase: d.servings.base };
+  [["f-macro-calories", "calories"], ["f-macro-protein", "proteinG"], ["f-macro-fat", "fatG"], ["f-macro-carbs", "carbsG"]]
+    .forEach(function (f) {
+      const el = document.getElementById(f[0]);
+      if (el) el.value = String(d.macrosPerServing[f[1]]);
+    });
+}
 function syncDraftFromDOM() {
   const d = state.editDraft;
   if (!d) return;
@@ -5781,6 +5821,7 @@ function syncDraftFromDOM() {
   if (get("f-title") !== undefined) d.title = get("f-title");
   if (get("f-description") !== undefined) d.description = get("f-description");
   /* tags are chips, not typed text, so nothing to harvest here */
+  const baseBefore = d.servings.base;
   if (get("f-servings-base") !== undefined) d.servings.base = parseFloat(get("f-servings-base")) || d.servings.base;
   if (get("f-servings-unit") !== undefined) d.servings.unit = get("f-servings-unit");
   if (get("f-macro-calories") !== undefined) d.macrosPerServing.calories = numOrEmpty(get("f-macro-calories"));
@@ -5788,6 +5829,7 @@ function syncDraftFromDOM() {
   if (get("f-macro-fat") !== undefined) d.macrosPerServing.fatG = numOrEmpty(get("f-macro-fat"));
   if (get("f-macro-carbs") !== undefined) d.macrosPerServing.carbsG = numOrEmpty(get("f-macro-carbs"));
   if (get("f-macro-source") !== undefined) d.macrosPerServing.source = get("f-macro-source");
+  if (Number(d.servings.base) !== Number(baseBefore)) rescaleDraftMacros(d, baseBefore);
   if (get("f-notes") !== undefined) d.notes = get("f-notes");
   /* normalizeBody drops the whole source object when the url is empty, so
      clearing the field is how you take a credit off a recipe. The site name
@@ -8876,6 +8918,10 @@ Actions.dismissLock = function() {
   state.modal = null;
   state.lockedInfo = null;
   renderModal();
+};
+/* Leaving the base servings box rescales the macros beside it. */
+Actions.syncServings = function() {
+  syncDraftFromDOM();
 };
 Actions.setDraftVisibility = function(v) {
   syncDraftFromDOM();
